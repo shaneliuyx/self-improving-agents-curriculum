@@ -1,0 +1,15 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.env
+*.db
+*.sqlite3
+# keep placeholder dirs but ignore generated content
+evolve/archive/*
+!evolve/archive/.gitkeep
+skills/SKILLS/*
+!skills/SKILLS/.gitkeep
+.DS_Store
+.omc/

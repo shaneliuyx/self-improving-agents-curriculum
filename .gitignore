@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.env
+*.db
+*.sqlite3
+
+# generated scaffold content (keep placeholders)
+scaffold/evolve/archive/*
+!scaffold/evolve/archive/.gitkeep
+scaffold/skills/SKILLS/*
+!scaffold/skills/SKILLS/.gitkeep
+
+# OS / editor
+.DS_Store
+.obsidian/
+*.swp
+
+# OMC state
+.omc/

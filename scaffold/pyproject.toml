@@ -1,0 +1,33 @@
+[project]
+name = "self-improving-agent-lab"
+version = "0.1.0"
+description = "Runnable scaffold for building self-improving agents on local oMLX or Claude MAX via VibeProxy."
+requires-python = ">=3.10"
+dependencies = [
+    "openai>=1.30",
+    "numpy>=1.24",
+]
+
+[project.optional-dependencies]
+rich = ["rich>=13.0"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+# The scaffold is a flat collection of small packages plus a top-level config module.
+# Declaring them here lets `pip install -e .` put the repo root on sys.path so
+# `from backends.adapter import ...` and `from config import settings` resolve
+# both at runtime and for type checkers.
+[tool.setuptools]
+py-modules = ["config"]
+packages = [
+    "backends",
+    "agent",
+    "memory",
+    "reflection",
+    "skills",
+    "verification",
+    "evolve",
+    "evals",
+]

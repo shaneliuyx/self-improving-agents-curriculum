@@ -1,0 +1,8 @@
+{
+  "include": ["."],
+  "exclude": ["**/__pycache__", "evolve/archive", "skills/SKILLS", ".venv"],
+  "extraPaths": ["."],
+  "executionEnvironments": [{ "root": "." }],
+  "pythonVersion": "3.10",
+  "reportMissingImports": "warning"
+}
