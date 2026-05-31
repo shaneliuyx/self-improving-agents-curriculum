@@ -75,3 +75,23 @@ jobs:
               sys.exit(1)
           print(f"All wikilinks resolve across {len(valid)} notes.")
           PY
+
+  behavior-eval:
+    name: behavior eval (skips if no backend)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install scaffold (full-stack imports)
+        run: |
+          cd scaffold
+          python -m pip install -e .
+      - name: Run behavior eval
+        run: |
+          cd scaffold
+          # No backend is reachable in CI, so this SKIPs (exit 0). It still imports
+          # the whole stack (catching import regressions py_compile misses) and runs
+          # for real locally when oMLX (:8000) / VibeProxy (:8317) are up.
+          python -m evals.behavior_test

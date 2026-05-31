@@ -109,6 +109,15 @@ regression_count = baseline_passing_tasks - (baseline_passing_tasks INTERSECT va
 
 Any variant with `regression_count > 0` is a candidate for discard unless the new capabilities clearly outweigh the regressions. Set a hard threshold (e.g., `regression_count == 0` required to keep a variant) unless you have explicit justification.
 
+> [!tip] Compile checks are not behavior checks
+> `py_compile` and a type-checker prove the code *parses*, not that the agent *behaves*. The scaffold ships `evals/behavior_test.py`: it asserts the agent actually runs the calculator tool and returns `396` on every **reachable** backend (oMLX via the text-tool-call fallback + VibeProxy via native `tool_calls`) and that `MemoryStore` ranks the right memory. Backends that are down are SKIPPED, so it is safe in CI (where it skip-passes and doubles as a full-stack import test) yet catches real behavior regressions when you run it locally with a backend up:
+>
+> ```bash
+> OMLX_API_KEY=... OMLX_MODEL=Qwen2.5-Coder-7B-Instruct-4bit \
+> EMBED_MODEL=nomicai-modernbert-embed-base-bf16 VIBE_MODEL=claude-sonnet-4-5-20250929 \
+> python -m evals.behavior_test
+> ```
+
 ---
 
 ## 4 - Eval Loop: Flow Diagram

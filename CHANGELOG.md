@@ -3,6 +3,15 @@
 All notable changes to the curriculum and scaffold. The `/improve-curriculum` command
 appends a dated entry here each time it refreshes the material from new sources.
 
+## 2026-05-31 — Behavior-eval regression guard
+
+- **New `evals/behavior_test.py`**: asserts the agent *executes* the calculator tool and returns `396`
+  on every reachable backend (oMLX text-tool-call fallback + VibeProxy native `tool_calls`), and that
+  `MemoryStore` ranks the right memory. Backends that are down are SKIPPED, so it is CI-safe. Verified
+  live: all 3 checks PASS; skip path exits 0.
+- **New CI job `behavior-eval`**: installs the scaffold and runs the eval - in CI it skip-passes and
+  doubles as a full-stack import test (catching import regressions `py_compile` misses). Documented in note 10.
+
 ## 2026-05-31 — Baseline loop made oMLX-complete (text-tool-call fallback)
 
 - **Verified `agent/loop.py` against oMLX** and found it relied solely on native `tool_calls`, which the
