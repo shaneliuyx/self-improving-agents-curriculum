@@ -39,13 +39,16 @@ def build_agent():
             "pydantic-ai is not installed. Run:  pip install -e \".[frameworks]\""
         ) from exc
 
-    backend = BACKENDS[os.getenv("AGENT_BACKEND", "omlx")]
+    backend_name = os.getenv("AGENT_BACKEND", "omlx")
+    backend = BACKENDS[backend_name]
+    # oMLX may require a key (OMLX_API_KEY); VibeProxy uses OAuth and ignores it.
+    api_key = (
+        os.getenv("OMLX_API_KEY", "not-needed") if backend_name == "omlx"
+        else os.getenv("LLM_API_KEY", "not-needed")
+    )
     model = OpenAIChatModel(
         backend["model"],
-        provider=OpenAIProvider(
-            base_url=backend["base_url"],                     # <-- the only backend-aware line
-            api_key=os.getenv("LLM_API_KEY", "not-needed"),
-        ),
+        provider=OpenAIProvider(base_url=backend["base_url"], api_key=api_key),
     )
     agent = Agent(
         model,

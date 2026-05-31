@@ -107,7 +107,8 @@ class Mem0Store:
 
     def search(self, query: str, top_k: int = 5) -> list[Mem0Hit]:
         """Retrieve the most relevant memories for a query."""
-        res = self._mem.search(query, user_id=self.scope, limit=top_k)
+        # mem0 2.x: scope goes in filters=, and the arg is top_k (not limit).
+        res = self._mem.search(query, filters={"user_id": self.scope}, top_k=top_k)  # type: ignore[call-arg]
         # mem0 returns {"results": [{"memory": str, "score": float, "metadata": {...}}, ...]}
         rows = res.get("results", res) if isinstance(res, dict) else res
         return [

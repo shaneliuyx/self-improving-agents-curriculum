@@ -92,9 +92,14 @@ flowchart LR
 
 ---
 
-## 4. Hands-on lab - the two drop-ins
+## 4. Hands-on lab - the framework drop-ins
 
-The scaffold ships two backend-aware adapters under [`frameworks/`](https://github.com/shaneliuyx/self-improving-agents-curriculum/tree/main/scaffold/frameworks). They target oMLX/VibeProxy with no code change - only a `base_url`.
+The scaffold ships three adapters under [`frameworks/`](https://github.com/shaneliuyx/self-improving-agents-curriculum/tree/main/scaffold/frameworks): `pydantic_ai_loop.py` and `mem0_memory.py` (oMLX/VibeProxy via `base_url`), and `claude_agent_sdk_loop.py` (Claude subscription, see Section 5).
+
+> [!success] All three live-verified (2026-05-31)
+> - **`claude_agent_sdk_loop.py`** - returns `396` via the in-process calculate tool on the Claude subscription.
+> - **`pydantic_ai_loop.py`** - returns `396` against VibeProxy/Claude (native tool-calling). On an **oMLX small model it does NOT execute the tool** - the model emits the call as text (`<calculator .../>`), because oMLX/the 7B model does not return structured `tool_calls`. Framework loops that rely on native function-calling need a tool-capable backend (Claude) or a larger local model.
+> - **`mem0_memory.py`** - on oMLX (local 7B fact-extraction + `nomicai-modernbert-embed-base-bf16` embeddings + chroma), `add` then `search` returned the right memory at **0.849** similarity. (mem0 2.x API: `search(query, filters={"user_id": ...}, top_k=...)`.)
 
 ```bash
 # install the optional graduation deps

@@ -3,6 +3,16 @@
 All notable changes to the curriculum and scaffold. The `/improve-curriculum` command
 appends a dated entry here each time it refreshes the material from new sources.
 
+## 2026-05-31 — All three framework adapters live-verified
+
+- **`pydantic_ai_loop.py`** (pydantic-ai 1.104.0): returns `396` against VibeProxy/Claude via native tool-calling.
+  Fixed its provider key to be backend-aware (`OMLX_API_KEY` for oMLX). Documented that **oMLX small
+  models do not return structured `tool_calls`** - they emit the call as text - so native-tool-calling
+  frameworks need a tool-capable backend or a larger local model.
+- **`mem0_memory.py`** (mem0 2.0.4): verified on oMLX (local 7B extraction + `nomicai-modernbert-embed-base-bf16`
+  embeddings + chroma) - `add` + `search` returned the right memory at 0.849 similarity. Updated to the
+  mem0 2.x API (`search(query, filters={...}, top_k=...)`).
+
 ## 2026-05-31 — Claude Agent SDK fully verified (subscription path works)
 
 - **Confirmed working**: with `claude-agent-sdk` 0.2.87 the adapter returns the correct answer
