@@ -1,6 +1,8 @@
 # Building Self-Improving Agents — Curriculum + Runnable Lab
 
-A hands-on, 13-module curriculum for building **self-improving AI agents** that run on
+[![ci](https://github.com/shaneliuyx/self-improving-agents-curriculum/actions/workflows/ci.yml/badge.svg)](https://github.com/shaneliuyx/self-improving-agents-curriculum/actions/workflows/ci.yml)
+
+A hands-on, 14-module curriculum for building **self-improving AI agents** that run on
 backends you already have — a **local model via [oMLX](https://omlx.ai)** (Apple Silicon)
 or your **Claude MAX subscription via [VibeProxy](https://github.com/automazeio/vibeproxy)** —
 with **no direct paid API calls**. It ships with a runnable Python scaffold and a slash

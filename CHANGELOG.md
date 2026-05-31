@@ -3,6 +3,17 @@
 All notable changes to the curriculum and scaffold. The `/improve-curriculum` command
 appends a dated entry here each time it refreshes the material from new sources.
 
+## 2026-05-31 — Claude Agent SDK adapter + CI
+
+- **Third framework adapter** `scaffold/frameworks/claude_agent_sdk_loop.py` — the Claude-native
+  track ([Claude Agent SDK](https://github.com/anthropics/claude-agent-sdk-python), what SIA + Nerve
+  use). It bundles the Claude Code CLI and runs on your Claude **subscription** directly (no API key,
+  no VibeProxy); intentionally ignores `base_url` since it does not fit the oMLX-local track. Added to
+  the `[frameworks]` extra. Note 13 §5 corrected to reflect the subscription auth model.
+- **GitHub Actions CI** (`.github/workflows/ci.yml`) — three jobs keep the repo green on every push/PR:
+  scaffold `py_compile`, a Mermaid render-lint over every note (fails on invalid diagrams), and a
+  wikilink resolver. All three verified green locally. Added a CI badge to the README.
+
 ## 2026-05-31 — Framework track + local-model prep
 
 - **New module `13 - Graduating to a Framework`** — grounded in a verified investigation of the

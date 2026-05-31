@@ -1,0 +1,77 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  python-compile:
+    name: scaffold py_compile
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Byte-compile every scaffold .py
+        run: |
+          cd scaffold
+          # py_compile checks syntax for the whole lab (including frameworks/).
+          # It does not execute imports, so optional deps are not required here.
+          find . -name '*.py' -not -path '*/.venv/*' -print0 | xargs -0 python -m py_compile
+          echo "All scaffold Python files compiled cleanly."
+
+  mermaid-lint:
+    name: mermaid render-lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Install mermaid-cli
+        run: npm install -g @mermaid-js/mermaid-cli
+      - name: Render every diagram (fails on any invalid Mermaid)
+        run: |
+          echo '{"args":["--no-sandbox"]}' > "$RUNNER_TEMP/pptr.json"
+          fail=0
+          shopt -s nullglob
+          for f in curriculum/*.md; do
+            grep -q '```mermaid' "$f" || continue
+            if ! mmdc -i "$f" -o "$RUNNER_TEMP/out.svg" -p "$RUNNER_TEMP/pptr.json" -q >"$RUNNER_TEMP/mmdc.log" 2>&1; then
+              echo "::error file=$f::Mermaid failed to render"
+              cat "$RUNNER_TEMP/mmdc.log"
+              fail=1
+            fi
+          done
+          if [ "$fail" -eq 0 ]; then echo "All Mermaid diagrams render."; fi
+          exit "$fail"
+
+  wikilink-check:
+    name: wikilink resolver
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Every [[wikilink]] resolves to a real note
+        run: |
+          python3 - <<'PY'
+          import re, glob, os, sys
+          files = sorted(glob.glob("curriculum/*.md"))
+          valid = {os.path.basename(f)[:-3] for f in files}
+          broken = []
+          for f in files:
+              for m in re.findall(r"\[\[([^\]]+)\]\]", open(f, encoding="utf-8").read()):
+                  target = m.split("#")[0].split("|")[0].strip()
+                  if target and target not in valid:
+                      broken.append(f"{os.path.basename(f)}: [[{target}]]")
+          if broken:
+              print("Broken wikilinks:")
+              for b in broken:
+                  print("  -", b)
+              sys.exit(1)
+          print(f"All wikilinks resolve across {len(valid)} notes.")
+          PY

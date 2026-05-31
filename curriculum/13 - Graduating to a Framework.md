@@ -138,10 +138,23 @@ mem0 does LLM-driven extraction, dedup, and scoping - the pipeline `memory/store
 
 ## 5. The Claude Agent SDK track
 
-If you run the **VibeProxy / Claude** backend, the most thematically aligned choice is the [Claude Agent SDK](https://github.com/anthropics/claude-agent-sdk-python) - it is what [SIA](https://github.com/hexo-ai/sia) and [Nerve](https://github.com/ClickHouse/nerve) build on. It is the Anthropic SDK under the hood, so you point its client at VibeProxy (`:8317`).
+The most Claude-native choice is the [Claude Agent SDK](https://github.com/anthropics/claude-agent-sdk-python) - it is what [SIA](https://github.com/hexo-ai/sia) and [Nerve](https://github.com/ClickHouse/nerve) build on. It **bundles the Claude Code CLI and authenticates through your Claude subscription directly** - no API key, and (unlike the other adapters) no VibeProxy. The SDK *is* Claude Code, so it uses the same subscription auth. The scaffold ships it as `frameworks/claude_agent_sdk_loop.py`:
+
+```python
+from claude_agent_sdk import query, ClaudeAgentOptions, tool, create_sdk_mcp_server
+
+@tool("calculate", "Evaluate arithmetic", {"expression": str})
+async def calculate(args):
+    return {"content": [{"type": "text", "text": str(eval(args["expression"]))}]}
+
+server = create_sdk_mcp_server(name="lab-tools", version="1.0.0", tools=[calculate])
+options = ClaudeAgentOptions(mcp_servers={"lab": server}, allowed_tools=["mcp__lab__calculate"], max_turns=3)
+async for message in query(prompt="What is 17 * 23?", options=options):
+    ...   # collect AssistantMessage -> TextBlock.text
+```
 
 > [!warning] It does not fit the oMLX-local track
-> The Claude Agent SDK expects the Anthropic API shape. oMLX-local generation speaks the OpenAI shape, so local-first users stay on the raw SDK (or Pydantic AI). This is why the lab keeps it as a documented option rather than a shipped adapter - it would split the "works on both backends" guarantee.
+> The Claude Agent SDK speaks the Claude Code / Anthropic shape, not an OpenAI-compatible local endpoint, so it ignores `base_url`. oMLX-local users stay on `agent/loop.py` or `frameworks/pydantic_ai_loop.py`. Run it with `python -m frameworks.claude_agent_sdk_loop` (needs an active Claude subscription).
 
 ---
 

@@ -11,8 +11,10 @@ Install the optional deps first:
     pip install -e ".[frameworks]"
 
 Modules:
-    mem0_memory     - mem0 as a drop-in for memory/store.py (Module 04/06)
-    pydantic_ai_loop - Pydantic AI as a drop-in for agent/loop.py (Module 03)
+    mem0_memory          - mem0 as a drop-in for memory/store.py (Module 04/06)
+    pydantic_ai_loop     - Pydantic AI as a drop-in for agent/loop.py (Module 03)
+    claude_agent_sdk_loop - Claude Agent SDK loop (Claude subscription track; what
+                           SIA and Nerve use). Uses your subscription, not VibeProxy.
 
 These imports are guarded: importing this package never fails even if the
 optional framework deps are not installed.

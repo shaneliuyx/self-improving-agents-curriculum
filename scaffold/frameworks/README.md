@@ -16,6 +16,7 @@ VibeProxy (`:8317`) through a custom OpenAI-compatible `base_url`.
 |---|---|---|---|
 | `mem0_memory.py` | `memory/store.py` (Module 04/06) | [mem0](https://github.com/mem0ai/mem0) (57k★) | Most popular memory layer; free dedup + scoping + extraction |
 | `pydantic_ai_loop.py` | `agent/loop.py` (Module 03) | [Pydantic AI](https://github.com/pydantic/pydantic-ai) (17k★) | Cleanest, least-opaque ReAct loop; one-line `base_url` |
+| `claude_agent_sdk_loop.py` | `agent/loop.py` (Module 03) | [Claude Agent SDK](https://github.com/anthropics/claude-agent-sdk-python) | What SIA + Nerve use; Claude **subscription** track (no API key, no VibeProxy) |
 
 ## Install + run
 
@@ -34,9 +35,6 @@ embeddings endpoint.
 
 ## Not covered here (by design)
 
-- **Claude Agent SDK** — what SIA (567★) and Nerve (54★) actually use. It fits the
-  VibeProxy/Claude track (point its Anthropic client at `:8317`) but not oMLX-local
-  generation, so it stays a documented option rather than a lab adapter.
 - **LangGraph / CrewAI / OpenAI Agents SDK / Strands** — all accept a custom
   `base_url` too, but add more abstraction than the lab needs. See note
   `13 - Graduating to a Framework` for the full comparison.
