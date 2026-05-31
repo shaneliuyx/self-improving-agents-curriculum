@@ -12,4 +12,3 @@ evolve/archive/*
 skills/SKILLS/*
 !skills/SKILLS/.gitkeep
 .DS_Store
-.omc/

@@ -448,6 +448,9 @@ If improvement stalls:
 > 4. A proposed skill contains `subprocess.run(...)`. According to `verification/gates.py`, what additional requirements must be satisfied before this skill can be committed?
 > 5. Your CHANGELOG shows three consecutive cycles with `delta: +0.08` for skills with names like `general_improvement_v1`, `general_improvement_v2`. What two failure modes does this pattern signal?
 
+> [!tip] Next step
+> Once your capstone runs end to end, see [[13 - Graduating to a Framework]] for when to swap a hand-built piece for mem0 or Pydantic AI - without changing your backends.
+
 ---
 
 ## Navigation

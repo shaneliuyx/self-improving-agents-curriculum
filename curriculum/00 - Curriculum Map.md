@@ -155,6 +155,7 @@ flowchart TD
     M10["10 · Evaluation Harness"]
     M11["11 · Capstone - Production Agent"]
     M12["12 · Resources and Field Map"]
+    M13["13 · Graduating to a Framework"]
 
     M00 --> M01
     M01 --> M02
@@ -168,6 +169,7 @@ flowchart TD
     M09 --> M10
     M10 --> M11
     M11 --> M12
+    M12 --> M13
 
     M03 -.->|"also feeds"| M07
     M05 -.->|"feeds"| M08
@@ -196,6 +198,7 @@ flowchart TD
 | 10 | [[10 - Evaluation Harness]] | Eval tasks, regression suite, the continual harness pattern |
 | 11 | [[11 - Capstone - Production Agent]] | Assemble all layers into a monitored, versioned production agent |
 | 12 | [[12 - Resources and Field Map]] | Papers, repos, community links, what to read next |
+| 13 | [[13 - Graduating to a Framework]] | Optional: when and how to adopt mem0, Pydantic AI, or the Claude Agent SDK on our backends |
 
 ---
 

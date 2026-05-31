@@ -59,6 +59,11 @@ are always local** (VibeProxy has no embeddings endpoint).
 | 10 | Evaluation Harness | Eval-first, regression guards, variant-vs-baseline |
 | 11 | Capstone — Production Agent | Wire it together + production checklist |
 | 12 | Resources & Field Map | Annotated bibliography + glossary |
+| 13 | Graduating to a Framework | Optional: when/how to adopt mem0, Pydantic AI, or the Claude Agent SDK on our backends |
+
+> **Local model prep (16–32 GB Macs):** Module 02 includes a model-selection table — e.g. `Qwen2.5-Coder-7B-Instruct-4bit` + `nomic-embed-text-v1.5` on 16 GB, stepping up to a 14B model on 32 GB. The Claude/VibeProxy track still installs the local embedding model.
+>
+> **Optional framework track:** `scaffold/frameworks/` ships backend-aware drop-ins — [mem0](https://github.com/mem0ai/mem0) for memory and [Pydantic AI](https://github.com/pydantic/pydantic-ai) for the loop — both pointed at oMLX/VibeProxy via a custom `base_url`. Install with `pip install -e ".[frameworks]"`.
 
 ---
 

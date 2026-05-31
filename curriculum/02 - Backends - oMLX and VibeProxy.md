@@ -26,6 +26,52 @@ updated: 2026-05-31
 
 ---
 
+## 0. Preparation - which models to install (16-32 GB Macs)
+
+Apple Silicon uses **unified memory** (CPU and GPU share one RAM pool), so your usable
+model size is "total RAM minus what macOS + apps need" - budget roughly **6-8 GB for the
+system**. A 4-bit quantized model needs about **0.5 GB per billion parameters** plus KV-cache
+for context. Download these from oMLX's model browser (they come from `mlx-community` on
+HuggingFace).
+
+### If you use the LOCAL (oMLX) track
+
+| RAM | Cheap / router model | Main agent model | Embeddings (always local) |
+|---|---|---|---|
+| **16 GB** | `Qwen2.5-3B-Instruct-4bit` (~2 GB) | `Qwen2.5-Coder-7B-Instruct-4bit` (~4.5 GB) | `nomic-embed-text-v1.5` (~0.5 GB) |
+| **32 GB** | `Qwen2.5-Coder-7B-Instruct-4bit` (~4.5 GB) | `Qwen2.5-Coder-14B-Instruct-4bit` (~8.5 GB) | `nomic-embed-text-v1.5` or `bge-m3` |
+
+Exact oMLX / HuggingFace model IDs:
+
+- Chat 3B:  `mlx-community/Qwen2.5-3B-Instruct-4bit`
+- Chat 7B:  `mlx-community/Qwen2.5-Coder-7B-Instruct-4bit`
+- Chat 14B: `mlx-community/Qwen2.5-Coder-14B-Instruct-4bit`  *(32 GB)*
+- Embed:    `mlx-community/nomic-embed-text-v1.5`
+
+> [!tip] 16 GB rule of thumb
+> Run **one** chat model at a time, keep context <= 8-16k tokens, and prefer **7B-4bit**.
+> A 7B-4bit chat model (~4.5 GB) + the embedding model (~0.5 GB) leaves ~6 GB for macOS.
+> Avoid 14B+ on 16 GB - you will swap to disk and the agent loop will crawl.
+
+> [!tip] 32 GB unlocks real model routing
+> You can keep a small router model **and** a 14B worker loaded at once - exactly what
+> [[08 - Self-Modification - The DGM Pattern]] uses: a strong model PROPOSES mutations, a cheap
+> local model EVALUATES them. A 32B-4bit model (~18 GB) also fits if you run it solo.
+
+### If you use the CLAUDE (VibeProxy) track
+
+You do **not** need a local chat model - Claude does generation. But you **still must install a
+local embedding model**, because VibeProxy has no embeddings endpoint and the memory layer
+([[04 - Memory Systems]]) always embeds locally:
+
+- Embed only: `mlx-community/nomic-embed-text-v1.5` (~0.5 GB - fits any Mac)
+
+> [!warning] Everyone installs the embedding model
+> Both tracks need `nomic-embed-text-v1.5` running in oMLX. On the Claude track, oMLX runs purely
+> as a local **embeddings** server on `:8000` while generation goes to VibeProxy `:8317`.
+
+---
+
 ## 1. oMLX - Apple Silicon Inference Server
 
 [oMLX](https://omlx.ai) is a native macOS menu-bar application that turns your Apple Silicon chip into an OpenAI-compatible inference server. It downloads models from HuggingFace, manages model subdirectories, and auto-discovers text LLMs, VLMs, embedding models, and rerankers from those directories.

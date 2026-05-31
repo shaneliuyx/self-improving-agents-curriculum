@@ -334,4 +334,4 @@ This mirrors the pattern in [[04 - Memory Systems]] - the generation backend is 
 
 ## Navigation
 
-← [[11 - Capstone - Production Agent]] · [[00 - Curriculum Map]] (home)
+← [[11 - Capstone - Production Agent]] · [[00 - Curriculum Map]] (home) · [[13 - Graduating to a Framework]] →

@@ -3,6 +3,18 @@
 All notable changes to the curriculum and scaffold. The `/improve-curriculum` command
 appends a dated entry here each time it refreshes the material from new sources.
 
+## 2026-05-31 — Framework track + local-model prep
+
+- **New module `13 - Graduating to a Framework`** — grounded in a verified investigation of the
+  cited 2026 self-improving-agent projects (all real; none use LangChain/CrewAI/AutoGen — they run
+  on raw SDKs, the Claude Agent SDK, or custom harnesses). Covers the make-or-break `base_url` test
+  and a framework landscape table. Wired into the MOC roadmap, capstone, nav, and Canvas (14 nodes).
+- **Optional framework adapters** in `scaffold/frameworks/`: `mem0_memory.py` (memory drop-in) and
+  `pydantic_ai_loop.py` (loop drop-in), both backend-aware (oMLX/VibeProxy via custom `base_url`),
+  with guarded optional imports. Added `[frameworks]` extra to `pyproject.toml`.
+- **Module 02 preparation section** — which local models to install on 16–32 GB Macs (concrete
+  `mlx-community` model IDs, RAM budgeting, and the "everyone installs the embedding model" rule).
+
 ## 2026-05-31 — Initial release
 
 ### Curriculum

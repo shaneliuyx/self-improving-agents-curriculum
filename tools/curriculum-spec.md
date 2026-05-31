@@ -76,6 +76,13 @@ PROJECTS / TOOLS (Show HN + GitHub, May 2026)
 - SIA (open source): https://github.com/hexo-ai/sia
 - "What 1k Harness Experiments Taught Me About Self-Improving Agents" (henrypan): https://www.henrypan.com/blog/2026-05-25-self-improvement-harness/
 - Strands — building self-extending CLI tools (AWS): https://aws.amazon.com/blogs/devops/building-self-extending-cli-tools-with-aws-strands/
+- mem0 — agent memory layer (used as optional drop-in): https://github.com/mem0ai/mem0
+- Pydantic AI — typed agent framework (optional loop drop-in): https://github.com/pydantic/pydantic-ai
+- LangGraph — agent orchestration: https://github.com/langchain-ai/langgraph
+- OpenAI Agents SDK: https://github.com/openai/openai-agents-python
+- CrewAI — multi-agent framework: https://github.com/crewAIInc/crewAI
+- Strands Agents (AWS): https://github.com/strands-agents/sdk-python
+- Claude Agent SDK (used by SIA, Nerve): https://github.com/anthropics/claude-agent-sdk-python
 - Arize — self-improving agent on a context graph of human disagreement: https://arize.com/blog/self-improving-agent-with-context-graph/
 - Claude Managed Agents — self-hosted sandboxes + MCP tunnels: https://claude.com/blog/claude-managed-agents-updates
 KEY PRODUCTION FINDING (NousResearch hermes-agent issue #29652) — the "rule priority hierarchy":
@@ -170,3 +177,4 @@ When a note has a hands-on lab, reference the relevant scaffold file by path and
 10 - Evaluation Harness
 11 - Capstone - Production Agent
 12 - Resources and Field Map
+13 - Graduating to a Framework

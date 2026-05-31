@@ -1,31 +1,238 @@
 {
-	"nodes":[
-		{"id":"n00","type":"file","file":"Self-Improving Agents/00 - Curriculum Map.md","x":0,"y":-260,"width":340,"height":120,"color":"6"},
-		{"id":"n01","type":"file","file":"Self-Improving Agents/01 - What Self-Improving Means.md","x":-380,"y":0,"width":340,"height":120,"color":"4"},
-		{"id":"n02","type":"file","file":"Self-Improving Agents/02 - Backends - oMLX and VibeProxy.md","x":60,"y":0,"width":340,"height":120,"color":"4"},
-		{"id":"n03","type":"file","file":"Self-Improving Agents/03 - The Minimal Agent Loop.md","x":-380,"y":200,"width":340,"height":120,"color":"4"},
-		{"id":"n04","type":"file","file":"Self-Improving Agents/04 - Memory Systems.md","x":60,"y":200,"width":340,"height":120,"color":"5"},
-		{"id":"n05","type":"file","file":"Self-Improving Agents/05 - Reflection and Self-Correction.md","x":-380,"y":400,"width":340,"height":120,"color":"5"},
-		{"id":"n06","type":"file","file":"Self-Improving Agents/06 - Skill Acquisition and Curation.md","x":60,"y":400,"width":340,"height":120,"color":"5"},
-		{"id":"n07","type":"file","file":"Self-Improving Agents/07 - Verification Gates and Layered Control.md","x":-380,"y":600,"width":340,"height":120,"color":"5"},
-		{"id":"n08","type":"file","file":"Self-Improving Agents/08 - Self-Modification - The DGM Pattern.md","x":60,"y":600,"width":340,"height":120,"color":"2"},
-		{"id":"n09","type":"file","file":"Self-Improving Agents/09 - Sandboxing and Safe Execution.md","x":-380,"y":800,"width":340,"height":120,"color":"2"},
-		{"id":"n10","type":"file","file":"Self-Improving Agents/10 - Evaluation Harness.md","x":60,"y":800,"width":340,"height":120,"color":"2"},
-		{"id":"n11","type":"file","file":"Self-Improving Agents/11 - Capstone - Production Agent.md","x":-380,"y":1000,"width":340,"height":120,"color":"3"},
-		{"id":"n12","type":"file","file":"Self-Improving Agents/12 - Resources and Field Map.md","x":60,"y":1000,"width":340,"height":120,"color":"3"}
-	],
-	"edges":[
-		{"id":"ehub","fromNode":"n00","toNode":"n01","fromSide":"bottom","toSide":"top","label":"start"},
-		{"id":"e1","fromNode":"n01","toNode":"n02","fromSide":"right","toSide":"left"},
-		{"id":"e2","fromNode":"n02","toNode":"n03","fromSide":"bottom","toSide":"top"},
-		{"id":"e3","fromNode":"n03","toNode":"n04","fromSide":"right","toSide":"left"},
-		{"id":"e4","fromNode":"n04","toNode":"n05","fromSide":"bottom","toSide":"top"},
-		{"id":"e5","fromNode":"n05","toNode":"n06","fromSide":"right","toSide":"left"},
-		{"id":"e6","fromNode":"n06","toNode":"n07","fromSide":"bottom","toSide":"top"},
-		{"id":"e7","fromNode":"n07","toNode":"n08","fromSide":"right","toSide":"left"},
-		{"id":"e8","fromNode":"n08","toNode":"n09","fromSide":"bottom","toSide":"top"},
-		{"id":"e9","fromNode":"n09","toNode":"n10","fromSide":"right","toSide":"left"},
-		{"id":"e10","fromNode":"n10","toNode":"n11","fromSide":"bottom","toSide":"top"},
-		{"id":"e11","fromNode":"n11","toNode":"n12","fromSide":"right","toSide":"left"}
-	]
+  "nodes": [
+    {
+      "id": "n00",
+      "type": "file",
+      "file": "Self-Improving Agents/00 - Curriculum Map.md",
+      "x": 0,
+      "y": -260,
+      "width": 340,
+      "height": 120,
+      "color": "6"
+    },
+    {
+      "id": "n01",
+      "type": "file",
+      "file": "Self-Improving Agents/01 - What Self-Improving Means.md",
+      "x": -380,
+      "y": 0,
+      "width": 340,
+      "height": 120,
+      "color": "4"
+    },
+    {
+      "id": "n02",
+      "type": "file",
+      "file": "Self-Improving Agents/02 - Backends - oMLX and VibeProxy.md",
+      "x": 60,
+      "y": 0,
+      "width": 340,
+      "height": 120,
+      "color": "4"
+    },
+    {
+      "id": "n03",
+      "type": "file",
+      "file": "Self-Improving Agents/03 - The Minimal Agent Loop.md",
+      "x": -380,
+      "y": 200,
+      "width": 340,
+      "height": 120,
+      "color": "4"
+    },
+    {
+      "id": "n04",
+      "type": "file",
+      "file": "Self-Improving Agents/04 - Memory Systems.md",
+      "x": 60,
+      "y": 200,
+      "width": 340,
+      "height": 120,
+      "color": "5"
+    },
+    {
+      "id": "n05",
+      "type": "file",
+      "file": "Self-Improving Agents/05 - Reflection and Self-Correction.md",
+      "x": -380,
+      "y": 400,
+      "width": 340,
+      "height": 120,
+      "color": "5"
+    },
+    {
+      "id": "n06",
+      "type": "file",
+      "file": "Self-Improving Agents/06 - Skill Acquisition and Curation.md",
+      "x": 60,
+      "y": 400,
+      "width": 340,
+      "height": 120,
+      "color": "5"
+    },
+    {
+      "id": "n07",
+      "type": "file",
+      "file": "Self-Improving Agents/07 - Verification Gates and Layered Control.md",
+      "x": -380,
+      "y": 600,
+      "width": 340,
+      "height": 120,
+      "color": "5"
+    },
+    {
+      "id": "n08",
+      "type": "file",
+      "file": "Self-Improving Agents/08 - Self-Modification - The DGM Pattern.md",
+      "x": 60,
+      "y": 600,
+      "width": 340,
+      "height": 120,
+      "color": "2"
+    },
+    {
+      "id": "n09",
+      "type": "file",
+      "file": "Self-Improving Agents/09 - Sandboxing and Safe Execution.md",
+      "x": -380,
+      "y": 800,
+      "width": 340,
+      "height": 120,
+      "color": "2"
+    },
+    {
+      "id": "n10",
+      "type": "file",
+      "file": "Self-Improving Agents/10 - Evaluation Harness.md",
+      "x": 60,
+      "y": 800,
+      "width": 340,
+      "height": 120,
+      "color": "2"
+    },
+    {
+      "id": "n11",
+      "type": "file",
+      "file": "Self-Improving Agents/11 - Capstone - Production Agent.md",
+      "x": -380,
+      "y": 1000,
+      "width": 340,
+      "height": 120,
+      "color": "3"
+    },
+    {
+      "id": "n12",
+      "type": "file",
+      "file": "Self-Improving Agents/12 - Resources and Field Map.md",
+      "x": 60,
+      "y": 1000,
+      "width": 340,
+      "height": 120,
+      "color": "3"
+    },
+    {
+      "id": "n13",
+      "type": "file",
+      "file": "Self-Improving Agents/13 - Graduating to a Framework.md",
+      "x": -380,
+      "y": 1200,
+      "width": 340,
+      "height": 120,
+      "color": "3"
+    }
+  ],
+  "edges": [
+    {
+      "id": "ehub",
+      "fromNode": "n00",
+      "toNode": "n01",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "label": "start"
+    },
+    {
+      "id": "e1",
+      "fromNode": "n01",
+      "toNode": "n02",
+      "fromSide": "right",
+      "toSide": "left"
+    },
+    {
+      "id": "e2",
+      "fromNode": "n02",
+      "toNode": "n03",
+      "fromSide": "bottom",
+      "toSide": "top"
+    },
+    {
+      "id": "e3",
+      "fromNode": "n03",
+      "toNode": "n04",
+      "fromSide": "right",
+      "toSide": "left"
+    },
+    {
+      "id": "e4",
+      "fromNode": "n04",
+      "toNode": "n05",
+      "fromSide": "bottom",
+      "toSide": "top"
+    },
+    {
+      "id": "e5",
+      "fromNode": "n05",
+      "toNode": "n06",
+      "fromSide": "right",
+      "toSide": "left"
+    },
+    {
+      "id": "e6",
+      "fromNode": "n06",
+      "toNode": "n07",
+      "fromSide": "bottom",
+      "toSide": "top"
+    },
+    {
+      "id": "e7",
+      "fromNode": "n07",
+      "toNode": "n08",
+      "fromSide": "right",
+      "toSide": "left"
+    },
+    {
+      "id": "e8",
+      "fromNode": "n08",
+      "toNode": "n09",
+      "fromSide": "bottom",
+      "toSide": "top"
+    },
+    {
+      "id": "e9",
+      "fromNode": "n09",
+      "toNode": "n10",
+      "fromSide": "right",
+      "toSide": "left"
+    },
+    {
+      "id": "e10",
+      "fromNode": "n10",
+      "toNode": "n11",
+      "fromSide": "bottom",
+      "toSide": "top"
+    },
+    {
+      "id": "e11",
+      "fromNode": "n11",
+      "toNode": "n12",
+      "fromSide": "right",
+      "toSide": "left"
+    },
+    {
+      "id": "e12",
+      "fromNode": "n12",
+      "toNode": "n13",
+      "fromSide": "bottom",
+      "toSide": "top"
+    }
+  ]
 }
