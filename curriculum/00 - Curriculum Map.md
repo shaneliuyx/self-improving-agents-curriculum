@@ -219,9 +219,11 @@ BACKENDS = {
 }
 
 def make_client(backend=None):
-    b = BACKENDS[backend or os.getenv("AGENT_BACKEND", "omlx")]
-    # Local servers ignore the key; VibeProxy uses OAuth under the hood.
-    return OpenAI(base_url=b["base_url"], api_key=os.getenv("LLM_API_KEY", "not-needed")), b["model"]
+    key = backend or os.getenv("AGENT_BACKEND", "omlx")
+    b = BACKENDS[key]
+    # oMLX may require a key (OMLX_API_KEY); VibeProxy uses OAuth and ignores it.
+    api_key = os.getenv("OMLX_API_KEY", "not-needed") if key == "omlx" else os.getenv("LLM_API_KEY", "not-needed")
+    return OpenAI(base_url=b["base_url"], api_key=api_key), b["model"]
 ```
 
 **Smoke-test script** - run this from `self-improving-agent-lab/`:

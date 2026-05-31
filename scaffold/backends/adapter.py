@@ -13,7 +13,8 @@ Canonical snippet (from the curriculum spec):
     }
     def make_client(backend=None):
         b = BACKENDS[backend or os.getenv("AGENT_BACKEND", "omlx")]
-        return OpenAI(base_url=b["base_url"], api_key=os.getenv("LLM_API_KEY", "not-needed")), b["model"]
+        # oMLX may require OMLX_API_KEY; VibeProxy ignores the key.
+        return OpenAI(base_url=b["base_url"], api_key=...), b["model"]
 
 Embeddings are intentionally NOT handled here - they always go to oMLX
 regardless of the generation backend (VibeProxy has no /v1/embeddings).
@@ -59,12 +60,13 @@ def make_client(backend: str | None = None) -> tuple[OpenAI, str]:
             f"Unknown backend {key!r}. Valid choices: {list(BACKENDS)}"
         )
     b = BACKENDS[key]
-    # Local servers ignore the api_key field entirely.
-    # VibeProxy uses OAuth under the hood, so any non-empty placeholder works.
-    client = OpenAI(
-        base_url=b["base_url"],
-        api_key=os.getenv("LLM_API_KEY", "not-needed"),
+    # oMLX may require an API key (set OMLX_API_KEY in oMLX Preferences).
+    # VibeProxy uses OAuth and ignores the key, so any placeholder works for it.
+    api_key = (
+        os.getenv("OMLX_API_KEY", "not-needed") if key == "omlx"
+        else os.getenv("LLM_API_KEY", "not-needed")
     )
+    client = OpenAI(base_url=b["base_url"], api_key=api_key)
     return client, b["model"]
 
 
@@ -117,6 +119,8 @@ def embed(texts: list[str]) -> list[list[float]]:
     embed_base_url = os.getenv("EMBED_BASE_URL", "http://localhost:8000/v1")
     embed_model = os.getenv("EMBED_MODEL", "Qwen3-Embedding-0.6B-4bit-DWQ")
 
-    emb_client = OpenAI(base_url=embed_base_url, api_key="not-needed")
+    # Embeddings hit oMLX, which may require a key - reuse OMLX_API_KEY.
+    embed_key = os.getenv("OMLX_API_KEY", os.getenv("LLM_API_KEY", "not-needed"))
+    emb_client = OpenAI(base_url=embed_base_url, api_key=embed_key)
     response = emb_client.embeddings.create(model=embed_model, input=texts)
     return [item.embedding for item in response.data]

@@ -23,6 +23,7 @@ Every code example MUST work on both backends via a single OpenAI-compatible `ba
   OpenAI- and Anthropic-compatible. Adds extended-thinking support via model-name suffix.
   Repo: https://github.com/automazeio/vibeproxy  ToS caveat: using a subscription via proxy
   may violate provider ToS — state this once, neutrally, where relevant.
+- AUTH FACT: oMLX may require an API key (set OMLX_API_KEY, from oMLX Preferences) for BOTH chat and embeddings; VibeProxy uses OAuth and ignores the key. Even the Claude track needs OMLX_API_KEY because embeddings are local.
 - CRITICAL ARCHITECTURE FACT: VibeProxy exposes CHAT ONLY — there is NO embeddings endpoint
   on the Claude subscription. oMLX DOES serve embeddings locally. Therefore the memory/vector
   layer ALWAYS uses a LOCAL embedding model (via oMLX `/v1/embeddings` or sentence-transformers),
@@ -42,8 +43,9 @@ Every code example MUST work on both backends via a single OpenAI-compatible `ba
   }
   def make_client(backend=None):
       b = BACKENDS[backend or os.getenv("AGENT_BACKEND", "omlx")]
-      # Local servers ignore the key; VibeProxy uses OAuth under the hood, so a placeholder is fine.
-      return OpenAI(base_url=b["base_url"], api_key=os.getenv("LLM_API_KEY", "not-needed")), b["model"]
+      # oMLX may require a key (OMLX_API_KEY); VibeProxy uses OAuth and ignores it.
+      key = os.getenv("OMLX_API_KEY", "not-needed") if (backend or os.getenv("AGENT_BACKEND","omlx"))=="omlx" else os.getenv("LLM_API_KEY", "not-needed")
+      return OpenAI(base_url=b["base_url"], api_key=key), b["model"]
   ```
 - Embeddings snippet (always local):
   ```python

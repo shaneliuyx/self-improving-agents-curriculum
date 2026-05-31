@@ -45,7 +45,9 @@ def _mem0_config() -> dict[str, Any]:
     """
     gen = BACKENDS[os.getenv("AGENT_BACKEND", "omlx")]
     embed_base = os.getenv("EMBED_BASE_URL", "http://localhost:8000/v1")
-    embed_model = os.getenv("EMBED_MODEL", "nomic-embed-text")
+    embed_model = os.getenv("EMBED_MODEL", "Qwen3-Embedding-0.6B-4bit-DWQ")
+    omlx_key = os.getenv("OMLX_API_KEY", "not-needed")
+    gen_key = omlx_key if os.getenv("AGENT_BACKEND", "omlx") == "omlx" else os.getenv("LLM_API_KEY", "not-needed")
     return {
         # LLM that mem0 uses to extract/condense facts from raw messages.
         "llm": {
@@ -53,7 +55,7 @@ def _mem0_config() -> dict[str, Any]:
             "config": {
                 "model": gen["model"],
                 "openai_base_url": gen["base_url"],
-                "api_key": os.getenv("LLM_API_KEY", "not-needed"),
+                "api_key": gen_key,
             },
         },
         # Embedder is ALWAYS the local oMLX endpoint (VibeProxy has none).
@@ -62,7 +64,7 @@ def _mem0_config() -> dict[str, Any]:
             "config": {
                 "model": embed_model,
                 "openai_base_url": embed_base,
-                "api_key": "not-needed",
+                "api_key": omlx_key,
             },
         },
         # Local, file-backed vector store so the demo needs no extra service.

@@ -3,6 +3,18 @@
 All notable changes to the curriculum and scaffold. The `/improve-curriculum` command
 appends a dated entry here each time it refreshes the material from new sources.
 
+## 2026-05-31 — oMLX API-key support + live end-to-end verification
+
+- **Fixed: oMLX requires an API key.** The baked-in "local servers ignore the key" assumption was
+  wrong — auth-enabled oMLX rejects requests. Added `OMLX_API_KEY` (used for oMLX **chat and
+  embeddings**) across `adapter.py`, `config.py`, `memory/store.py`, `frameworks/mem0_memory.py`,
+  `.env.example`, the spec, and notes 00/02. The Claude/VibeProxy track needs it too, since embeddings
+  are always local.
+- **Verified live** against a running oMLX (auth on): `adapter.chat`, `adapter.embed` (768-dim), and the
+  full `MemoryStore` add + similarity search (correct ranking) all pass with
+  `Qwen2.5-Coder-7B-Instruct-4bit` + `nomicai-modernbert-embed-base-bf16`. Both backends now proven
+  end-to-end through the scaffold.
+
 ## 2026-05-31 — Verified model IDs against live backends
 
 - **Fixed wrong model IDs** found by checking the HuggingFace API and a running VibeProxy:

@@ -29,6 +29,9 @@ class Settings:
     omlx_model: str = os.getenv("OMLX_MODEL", "qwen2.5-coder-7b")
     vibe_model: str = os.getenv("VIBE_MODEL", "claude-sonnet-4-5-20250929")
     llm_api_key: str = os.getenv("LLM_API_KEY", "not-needed")
+    # oMLX API key (oMLX Preferences -> API). Used for oMLX chat AND embeddings.
+    # Falls back to LLM_API_KEY / "not-needed" when oMLX auth is disabled.
+    omlx_api_key: str = os.getenv("OMLX_API_KEY", os.getenv("LLM_API_KEY", "not-needed"))
 
     # oMLX base URLs (chat AND embeddings live here)
     omlx_base_url: str = "http://localhost:8000/v1"

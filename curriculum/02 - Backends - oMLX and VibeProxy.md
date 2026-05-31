@@ -36,9 +36,9 @@ HuggingFace).
 
 ### If you use the LOCAL (oMLX) track
 
-| RAM | Cheap / router model | Main agent model | Embeddings (always local) |
-|---|---|---|---|
-| **16 GB** | `Qwen2.5-3B-Instruct-4bit` (~2 GB) | `Qwen2.5-Coder-7B-Instruct-4bit` (~4.5 GB) | `Qwen3-Embedding-0.6B-4bit-DWQ` (~0.4 GB) |
+| RAM       | Cheap / router model                       | Main agent model                            | Embeddings (always local)                                 |
+| --------- | ------------------------------------------ | ------------------------------------------- | --------------------------------------------------------- |
+| **16 GB** | `Qwen2.5-3B-Instruct-4bit` (~2 GB)         | `Qwen2.5-Coder-7B-Instruct-4bit` (~4.5 GB)  | `Qwen3-Embedding-0.6B-4bit-DWQ` (~0.4 GB)                 |
 | **32 GB** | `Qwen2.5-Coder-7B-Instruct-4bit` (~4.5 GB) | `Qwen2.5-Coder-14B-Instruct-4bit` (~8.5 GB) | `Qwen3-Embedding-0.6B` or `nomicai-modernbert-embed-base` |
 
 Exact oMLX / HuggingFace model IDs:
@@ -98,10 +98,16 @@ oMLX exposes two compatible APIs on the same port:
 > [!tip] Admin Chat UI
 > Visit `http://localhost:8000/admin/chat` in your browser to test a model interactively before wiring it into code. It also shows which models are loaded and their memory footprint.
 
-Verify oMLX is responding:
+> [!warning] oMLX may require an API key
+> If you enabled authentication in oMLX (**Preferences -> API**), every request needs an
+> `Authorization: Bearer <key>` header. Set `OMLX_API_KEY` to that key - it is used for oMLX
+> **chat and embeddings**. You need it even on the Claude/VibeProxy track, because embeddings
+> always go to oMLX. (A `not-needed` placeholder only works when oMLX auth is OFF.)
+
+Verify oMLX is responding (include your key if auth is on):
 
 ```bash
-curl http://localhost:8000/v1/models | python3 -m json.tool
+curl http://localhost:8000/v1/models -H "Authorization: Bearer $OMLX_API_KEY" | python3 -m json.tool
 ```
 
 You should see a list of your downloaded models with their IDs.
@@ -194,9 +200,11 @@ BACKENDS = {
 }
 
 def make_client(backend=None):
-    b = BACKENDS[backend or os.getenv("AGENT_BACKEND", "omlx")]
-    # Local servers ignore the key; VibeProxy uses OAuth under the hood.
-    return OpenAI(base_url=b["base_url"], api_key=os.getenv("LLM_API_KEY", "not-needed")), b["model"]
+    key = backend or os.getenv("AGENT_BACKEND", "omlx")
+    b = BACKENDS[key]
+    # oMLX may require a key (OMLX_API_KEY); VibeProxy uses OAuth and ignores it.
+    api_key = os.getenv("OMLX_API_KEY", "not-needed") if key == "omlx" else os.getenv("LLM_API_KEY", "not-needed")
+    return OpenAI(base_url=b["base_url"], api_key=api_key), b["model"]
 ```
 
 Switch backends with a single environment variable:

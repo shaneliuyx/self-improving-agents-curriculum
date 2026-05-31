@@ -46,7 +46,7 @@ def _embed_texts(texts: list[str]) -> list[list[float]]:
     Always uses EMBED_BASE_URL (defaults to http://localhost:8000/v1).
     Never routes to VibeProxy.
     """
-    client = OpenAI(base_url=settings.embed_base_url, api_key="not-needed")
+    client = OpenAI(base_url=settings.embed_base_url, api_key=settings.omlx_api_key)
     response = client.embeddings.create(model=settings.embed_model, input=texts)
     return [item.embedding for item in response.data]
 
