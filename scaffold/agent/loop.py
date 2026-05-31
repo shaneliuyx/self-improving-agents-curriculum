@@ -18,6 +18,7 @@ References:
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -73,6 +74,50 @@ def _build_system_prompt() -> str:
         "Use the available tools when you need to compute or look up information. "
         "When you have a final answer, respond with plain text (no tool call)."
     )
+
+
+# ---------------------------------------------------------------------------
+# Text-based tool-call fallback (for local models that do not emit the
+# structured OpenAI `tool_calls` field - e.g. small models served by oMLX, which
+# return the call as text like <tools>{"name": ..., "arguments": {...}}</tools>).
+# ---------------------------------------------------------------------------
+
+def _parse_text_tool_calls(content: str) -> list[tuple[str, dict[str, Any]]]:
+    """
+    Extract (tool_name, arguments) pairs from an assistant message's TEXT when
+    the backend did not return structured tool_calls. Handles the common shapes:
+    <tool_call>...</tool_call>, <tools>...</tools>, <function_call>...</function_call>,
+    ```json fenced blocks, and a bare {...} object with a "name" field.
+    """
+    calls: list[tuple[str, dict[str, Any]]] = []
+    if not content:
+        return calls
+    candidates: list[str] = []
+    for tag in ("tool_call", "tools", "function_call", "function"):
+        candidates += re.findall(rf"<{tag}>\s*(.*?)\s*</{tag}>", content, re.S)
+    candidates += re.findall(r"```(?:json)?\s*(\{.*?\})\s*```", content, re.S)
+    if not candidates:
+        m = re.search(r"\{.*\"name\".*\}", content, re.S)
+        if m:
+            candidates.append(m.group(0))
+    for blob in candidates:
+        try:
+            obj = json.loads(blob)
+        except json.JSONDecodeError:
+            continue
+        for it in (obj if isinstance(obj, list) else [obj]):
+            if not isinstance(it, dict) or "name" not in it:
+                continue
+            name = it.get("name")
+            args = it.get("arguments") or it.get("args") or it.get("parameters") or {}
+            if isinstance(args, str):
+                try:
+                    args = json.loads(args)
+                except json.JSONDecodeError:
+                    args = {}
+            if isinstance(name, str) and isinstance(args, dict):
+                calls.append((name, args))
+    return calls
 
 
 # ---------------------------------------------------------------------------
@@ -186,6 +231,24 @@ def run_agent(
                     "role":         "tool",
                     "tool_call_id": tc.id,
                     "content":      result_text,
+                })
+
+        # --- Case 1b: text-based tool calls (local models that do not emit
+        # the structured tool_calls field - e.g. small models served by oMLX) ---
+        elif _parse_text_tool_calls(message.content or ""):
+            messages.append({"role": "assistant", "content": message.content or ""})
+            for name, args in _parse_text_tool_calls(message.content or ""):
+                tool_result = dispatch_tool(name, args)
+                result_text = json.dumps(tool_result)
+                trajectory.append(TrajectoryStep(
+                    round_num=round_num, role="tool", content=result_text,
+                    tool_name=name, tool_args=args, tool_result=tool_result,
+                ))
+                # No tool_call_id exists for a text-parsed call, so feed the
+                # observation back as a user turn (stays OpenAI-compatible).
+                messages.append({
+                    "role": "user",
+                    "content": f"Tool {name} returned: {result_text}. Use it to give the final answer.",
                 })
 
         # --- Case 2: the LLM produced a final answer (no tool call) ---

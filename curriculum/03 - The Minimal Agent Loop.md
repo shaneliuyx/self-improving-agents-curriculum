@@ -564,6 +564,9 @@ On oMLX or VibeProxy, the constraint is different: you are rate-limited by local
 > [!note] Pitfall: no stop condition beyond tool_calls
 > What happens if the model returns `tool_calls=[]` but also returns empty `content`? This can happen with some local models that are not well-tuned for tool use. Add a check: if both `tool_calls` and `content` are empty/None, treat it as an error turn and break the loop rather than looping forever.
 
+> [!warning] Pitfall (verified on oMLX): small local models emit tool calls as TEXT
+> Models like `Qwen2.5-Coder-7B` served by oMLX often do **not** return the structured `tool_calls` field - the call comes back inside `content` as text, e.g. `<tools>{"name": "calculator", "arguments": {"expression": "17 * 23 + 5"}}</tools>`. A loop that only checks `message.tool_calls` treats that as the final answer and never runs the tool. `agent/loop.py` therefore includes a `_parse_text_tool_calls()` fallback that detects `<tools>` / `<tool_call>` / fenced-JSON / bare-JSON calls, executes them via `dispatch_tool`, and feeds the observation back as a user turn. Verified live 2026-05-31: tool use now returns `396` on **both** oMLX (text fallback) and VibeProxy/Claude (native `tool_calls`).
+
 ---
 
 ## 10 · Forward References

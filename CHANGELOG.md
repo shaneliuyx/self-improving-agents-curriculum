@@ -3,6 +3,15 @@
 All notable changes to the curriculum and scaffold. The `/improve-curriculum` command
 appends a dated entry here each time it refreshes the material from new sources.
 
+## 2026-05-31 — Baseline loop made oMLX-complete (text-tool-call fallback)
+
+- **Verified `agent/loop.py` against oMLX** and found it relied solely on native `tool_calls`, which the
+  local 7B model does not emit - it returns the call as text (`<tools>{...}</tools>`), so the tool never ran.
+- **Added `_parse_text_tool_calls()`**: when there are no structured `tool_calls`, the loop now parses
+  `<tools>` / `<tool_call>` / fenced-JSON / bare-JSON calls from the content, executes them, and feeds the
+  observation back. Verified live: tool use returns `396` on **both** oMLX (text fallback) and
+  VibeProxy/Claude (native, no regression). Documented in note 03; cross-linked from note 13.
+
 ## 2026-05-31 — All three framework adapters live-verified
 
 - **`pydantic_ai_loop.py`** (pydantic-ai 1.104.0): returns `396` against VibeProxy/Claude via native tool-calling.

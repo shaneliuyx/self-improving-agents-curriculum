@@ -98,7 +98,7 @@ The scaffold ships three adapters under [`frameworks/`](https://github.com/shane
 
 > [!success] All three live-verified (2026-05-31)
 > - **`claude_agent_sdk_loop.py`** - returns `396` via the in-process calculate tool on the Claude subscription.
-> - **`pydantic_ai_loop.py`** - returns `396` against VibeProxy/Claude (native tool-calling). On an **oMLX small model it does NOT execute the tool** - the model emits the call as text (`<calculator .../>`), because oMLX/the 7B model does not return structured `tool_calls`. Framework loops that rely on native function-calling need a tool-capable backend (Claude) or a larger local model.
+> - **`pydantic_ai_loop.py`** - returns `396` against VibeProxy/Claude (native tool-calling). On an **oMLX small model it does NOT execute the tool** - the model emits the call as text (`<calculator .../>`), because oMLX/the 7B model does not return structured `tool_calls`. Framework loops that rely on native function-calling need a tool-capable backend (Claude) or a larger local model. (The raw `agent/loop.py` in [[03 - The Minimal Agent Loop]] adds a text-tool-call fallback for exactly this, so the local track works there.)
 > - **`mem0_memory.py`** - on oMLX (local 7B fact-extraction + `nomicai-modernbert-embed-base-bf16` embeddings + chroma), `add` then `search` returned the right memory at **0.849** similarity. (mem0 2.x API: `search(query, filters={"user_id": ...}, top_k=...)`.)
 
 ```bash
