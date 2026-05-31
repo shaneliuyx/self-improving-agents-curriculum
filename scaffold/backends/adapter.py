@@ -37,7 +37,7 @@ BACKENDS: dict[str, dict[str, str]] = {
         # VibeProxy routes your Claude MAX subscription (OAuth, no API key needed).
         # Note: using a subscription via proxy may violate provider ToS.
         "base_url": "http://localhost:8317/v1",
-        "model": os.getenv("VIBE_MODEL", "claude-sonnet-4-5"),
+        "model": os.getenv("VIBE_MODEL", "claude-sonnet-4-5-20250929"),  # run `curl localhost:8317/v1/models` for valid IDs
     },
 }
 
@@ -115,7 +115,7 @@ def embed(texts: list[str]) -> list[list[float]]:
         List of embedding vectors (list of floats).
     """
     embed_base_url = os.getenv("EMBED_BASE_URL", "http://localhost:8000/v1")
-    embed_model = os.getenv("EMBED_MODEL", "nomic-embed-text")
+    embed_model = os.getenv("EMBED_MODEL", "Qwen3-Embedding-0.6B-4bit-DWQ")
 
     emb_client = OpenAI(base_url=embed_base_url, api_key="not-needed")
     response = emb_client.embeddings.create(model=embed_model, input=texts)

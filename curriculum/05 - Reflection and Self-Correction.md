@@ -205,7 +205,7 @@ from openai import OpenAI
 # --- unified adapter (see backends/adapter.py) ---
 BACKENDS = {
     "omlx":      {"base_url": "http://localhost:8000/v1",  "model": os.getenv("OMLX_MODEL", "qwen2.5-coder-7b")},
-    "vibeproxy": {"base_url": "http://localhost:8317/v1",  "model": os.getenv("VIBE_MODEL", "claude-sonnet-4-5")},
+    "vibeproxy": {"base_url": "http://localhost:8317/v1",  "model": os.getenv("VIBE_MODEL", "claude-sonnet-4-5-20250929")},
 }
 
 def make_client(backend: Optional[str] = None) -> tuple[OpenAI, str]:

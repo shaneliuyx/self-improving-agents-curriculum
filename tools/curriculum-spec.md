@@ -38,7 +38,7 @@ Every code example MUST work on both backends via a single OpenAI-compatible `ba
   from openai import OpenAI  # OpenAI SDK speaks to any OpenAI-compatible server
   BACKENDS = {
       "omlx":      {"base_url": "http://localhost:8000/v1", "model": os.getenv("OMLX_MODEL", "qwen2.5-coder-7b")},
-      "vibeproxy": {"base_url": "http://localhost:8317/v1", "model": os.getenv("VIBE_MODEL", "claude-sonnet-4-5")},
+      "vibeproxy": {"base_url": "http://localhost:8317/v1", "model": os.getenv("VIBE_MODEL", "claude-sonnet-4-5-20250929")},
   }
   def make_client(backend=None):
       b = BACKENDS[backend or os.getenv("AGENT_BACKEND", "omlx")]
@@ -48,7 +48,7 @@ Every code example MUST work on both backends via a single OpenAI-compatible `ba
 - Embeddings snippet (always local):
   ```python
   emb = OpenAI(base_url="http://localhost:8000/v1", api_key="not-needed")  # oMLX
-  v = emb.embeddings.create(model="nomic-embed-text", input="text").data[0].embedding
+  v = emb.embeddings.create(model="Qwen3-Embedding-0.6B-4bit-DWQ", input="text").data[0].embedding
   ```
 
 ============================================================

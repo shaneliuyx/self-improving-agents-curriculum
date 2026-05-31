@@ -467,7 +467,7 @@ Run it:
 AGENT_BACKEND=omlx python evolve/sandboxed_loop.py
 
 # Against Claude via VibeProxy:
-AGENT_BACKEND=vibeproxy VIBE_MODEL=claude-sonnet-4-5 python evolve/sandboxed_loop.py
+AGENT_BACKEND=vibeproxy VIBE_MODEL=claude-sonnet-4-5-20250929 python evolve/sandboxed_loop.py
 ```
 
 > [!tip] Iteration cap is your first safety net

@@ -47,7 +47,7 @@ cp .env.example .env
 ```
 AGENT_BACKEND=omlx          # or vibeproxy
 OMLX_MODEL=qwen2.5-coder-7b
-VIBE_MODEL=claude-sonnet-4-5
+VIBE_MODEL=claude-sonnet-4-5-20250929
 EMBED_BASE_URL=http://localhost:8000/v1
 EMBED_MODEL=nomic-embed-text
 LLM_API_KEY=not-needed

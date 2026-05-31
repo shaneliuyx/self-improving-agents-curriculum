@@ -3,6 +3,19 @@
 All notable changes to the curriculum and scaffold. The `/improve-curriculum` command
 appends a dated entry here each time it refreshes the material from new sources.
 
+## 2026-05-31 — Verified model IDs against live backends
+
+- **Fixed wrong model IDs** found by checking the HuggingFace API and a running VibeProxy:
+  - VibeProxy serves dated IDs — the bare `claude-sonnet-4-5` is not valid. Updated the default to
+    `claude-sonnet-4-5-20250929` across `adapter.py`, `config.py`, `router.py`, `.env.example`, the
+    spec, and every note snippet (13 occurrences). Added a "run `curl :8317/v1/models`" tip to note 02.
+  - The recommended embedding IDs did not exist (`mlx-community/nomic-embed-text-v1.5` → 401). Replaced
+    with verified MLX embedders (`Qwen3-Embedding-0.6B-4bit-DWQ`, `bge-small-en-v1.5-bf16`,
+    `nomicai-modernbert-embed-base-bf16`) in note 02 and the scaffold defaults.
+  - Corrected an over-large model example (`qwen2.5-72b` → `Qwen2.5-Coder-14B-Instruct-4bit`).
+- **Verified**: a real chat completion through VibeProxy (`localhost:8317`) and the lab's own
+  `backends/adapter.py` (OpenAI SDK → VibeProxy) both return successfully.
+
 ## 2026-05-31 — Claude Agent SDK adapter + CI
 
 - **Third framework adapter** `scaffold/frameworks/claude_agent_sdk_loop.py` — the Claude-native

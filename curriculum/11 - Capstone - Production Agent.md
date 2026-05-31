@@ -127,7 +127,7 @@ cp .env.example .env
 # Edit .env and set at minimum:
 #   AGENT_BACKEND=omlx        # or vibeproxy
 #   OMLX_MODEL=qwen2.5-coder-7b
-#   VIBE_MODEL=claude-sonnet-4-5
+#   VIBE_MODEL=claude-sonnet-4-5-20250929
 #   VERIFY_THRESHOLD=0.02     # min eval delta to accept a change
 #   HUMAN_IN_LOOP=true        # pause before committing
 pip install -r requirements.txt
@@ -142,7 +142,7 @@ from openai import OpenAI
 
 BACKENDS = {
     "omlx":      {"base_url": "http://localhost:8000/v1",  "model": os.getenv("OMLX_MODEL", "qwen2.5-coder-7b")},
-    "vibeproxy": {"base_url": "http://localhost:8317/v1",  "model": os.getenv("VIBE_MODEL",  "claude-sonnet-4-5")},
+    "vibeproxy": {"base_url": "http://localhost:8317/v1",  "model": os.getenv("VIBE_MODEL",  "claude-sonnet-4-5-20250929")},
 }
 
 def make_client(backend=None):

@@ -97,7 +97,7 @@ stateDiagram-v2
 
 The [community consensus](https://www.reddit.com/r/AI_Agents/comments/1taei9m/stop_building_ai_agents/) on model routing applies directly here: don't use the large model for every call. DGM has a natural split:
 
-- **Mutation proposal** - requires creativity, understanding of the agent's purpose, and knowledge of what changes might help. Use the large model (`claude-sonnet-4-5` via VibeProxy, or `qwen2.5-72b` via oMLX).
+- **Mutation proposal** - requires creativity, understanding of the agent's purpose, and knowledge of what changes might help. Use the large model (`claude-sonnet-4-5-20250929` via VibeProxy, or `Qwen2.5-Coder-14B-Instruct-4bit` via oMLX).
 - **Evaluation runs** - requires only task execution, not reasoning about the agent itself. Use the small local model (`qwen2.5-coder-7b` via oMLX). These can be batched and run fast.
 
 This matches the [Autodidact](https://github.com/BuffaloTechRider/Autodidact) local-first pattern: keep the slow, expensive model out of the inner eval loop.

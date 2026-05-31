@@ -257,7 +257,7 @@ Usage:
 Environment:
     AGENT_BACKEND  - "omlx" or "vibeproxy" (default: omlx)
     OMLX_MODEL     - model name served by oMLX (default: qwen2.5-coder-7b)
-    VIBE_MODEL     - model name for VibeProxy (default: claude-sonnet-4-5)
+    VIBE_MODEL     - model name for VibeProxy (default: claude-sonnet-4-5-20250929)
     MAX_ITERATIONS - hard cap on tool-call rounds (default: 10)
 """
 

@@ -43,7 +43,7 @@ class RouteDecision:
 # ---------------------------------------------------------------------------
 _OMLX_SMALL  = os.getenv("OMLX_SMALL_MODEL",  os.getenv("OMLX_MODEL", "qwen2.5-coder-7b"))
 _OMLX_LARGE  = os.getenv("OMLX_LARGE_MODEL",  os.getenv("OMLX_MODEL", "qwen2.5-coder-7b"))
-_VIBE_MODEL  = os.getenv("VIBE_MODEL",  "claude-sonnet-4-5")
+_VIBE_MODEL  = os.getenv("VIBE_MODEL",  "claude-sonnet-4-5-20250929")
 _ACTIVE_BACKEND = os.getenv("AGENT_BACKEND", "omlx")
 
 

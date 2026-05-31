@@ -38,15 +38,15 @@ HuggingFace).
 
 | RAM | Cheap / router model | Main agent model | Embeddings (always local) |
 |---|---|---|---|
-| **16 GB** | `Qwen2.5-3B-Instruct-4bit` (~2 GB) | `Qwen2.5-Coder-7B-Instruct-4bit` (~4.5 GB) | `nomic-embed-text-v1.5` (~0.5 GB) |
-| **32 GB** | `Qwen2.5-Coder-7B-Instruct-4bit` (~4.5 GB) | `Qwen2.5-Coder-14B-Instruct-4bit` (~8.5 GB) | `nomic-embed-text-v1.5` or `bge-m3` |
+| **16 GB** | `Qwen2.5-3B-Instruct-4bit` (~2 GB) | `Qwen2.5-Coder-7B-Instruct-4bit` (~4.5 GB) | `Qwen3-Embedding-0.6B-4bit-DWQ` (~0.4 GB) |
+| **32 GB** | `Qwen2.5-Coder-7B-Instruct-4bit` (~4.5 GB) | `Qwen2.5-Coder-14B-Instruct-4bit` (~8.5 GB) | `Qwen3-Embedding-0.6B` or `nomicai-modernbert-embed-base` |
 
 Exact oMLX / HuggingFace model IDs:
 
 - Chat 3B:  `mlx-community/Qwen2.5-3B-Instruct-4bit`
 - Chat 7B:  `mlx-community/Qwen2.5-Coder-7B-Instruct-4bit`
 - Chat 14B: `mlx-community/Qwen2.5-Coder-14B-Instruct-4bit`  *(32 GB)*
-- Embed:    `mlx-community/nomic-embed-text-v1.5`
+- Embed:    `mlx-community/Qwen3-Embedding-0.6B-4bit-DWQ`  (alts: `mlx-community/bge-small-en-v1.5-bf16`, `mlx-community/nomicai-modernbert-embed-base-bf16`)
 
 > [!tip] 16 GB rule of thumb
 > Run **one** chat model at a time, keep context <= 8-16k tokens, and prefer **7B-4bit**.
@@ -64,10 +64,10 @@ You do **not** need a local chat model - Claude does generation. But you **still
 local embedding model**, because VibeProxy has no embeddings endpoint and the memory layer
 ([[04 - Memory Systems]]) always embeds locally:
 
-- Embed only: `mlx-community/nomic-embed-text-v1.5` (~0.5 GB - fits any Mac)
+- Embed only: `mlx-community/Qwen3-Embedding-0.6B-4bit-DWQ` (~0.4 GB - fits any Mac)
 
 > [!warning] Everyone installs the embedding model
-> Both tracks need `nomic-embed-text-v1.5` running in oMLX. On the Claude track, oMLX runs purely
+> Both tracks need a local embedding model (e.g. `Qwen3-Embedding-0.6B-4bit-DWQ`) running in oMLX. On the Claude track, oMLX runs purely
 > as a local **embeddings** server on `:8000` while generation goes to VibeProxy `:8317`.
 
 ---
@@ -82,8 +82,8 @@ local embedding model**, because VibeProxy has no embeddings endpoint and the me
 2. Move `oMLX.app` to `/Applications` and launch it. A menu-bar icon appears.
 3. Click the icon → **Preferences** → set your models directory (e.g. `~/omlx-models`).
 4. Click **Download Model** and fetch at minimum:
-   - A chat model: `Qwen/Qwen2.5-Coder-7B-Instruct` (recommended for code tasks)
-   - An embedding model: `nomic-ai/nomic-embed-text-v1.5`
+   - A chat model: `mlx-community/Qwen2.5-Coder-7B-Instruct-4bit` (recommended for code tasks)
+   - An embedding model: `mlx-community/Qwen3-Embedding-0.6B-4bit-DWQ`
 5. Click **Start Server**. The menu bar shows a green dot.
 
 oMLX exposes two compatible APIs on the same port:
@@ -121,6 +121,9 @@ You should see a list of your downloaded models with their IDs.
 2. Launch `VibeProxy.app`. A menu-bar icon appears.
 3. Click the icon → **Sign in with Anthropic**. Complete the OAuth flow in your browser using your Claude MAX account.
 4. The menu bar shows **Connected**. The proxy is now live at `http://localhost:8317`.
+
+> [!tip] Find your exact model IDs
+> VibeProxy exposes Anthropic-style **dated** IDs (e.g. `claude-sonnet-4-5-20250929`, `claude-sonnet-4-6`, `claude-opus-4-8`), not the bare `claude-sonnet-4-5-20250929`. List yours with `curl http://localhost:8317/v1/models` and set `VIBE_MODEL` to one of them.
 
 VibeProxy supports the same dual-protocol surface as oMLX:
 
@@ -187,7 +190,7 @@ from openai import OpenAI  # OpenAI SDK speaks to any OpenAI-compatible server
 
 BACKENDS = {
     "omlx":      {"base_url": "http://localhost:8000/v1", "model": os.getenv("OMLX_MODEL", "qwen2.5-coder-7b")},
-    "vibeproxy": {"base_url": "http://localhost:8317/v1", "model": os.getenv("VIBE_MODEL", "claude-sonnet-4-5")},
+    "vibeproxy": {"base_url": "http://localhost:8317/v1", "model": os.getenv("VIBE_MODEL", "claude-sonnet-4-5-20250929")},
 }
 
 def make_client(backend=None):
@@ -268,7 +271,7 @@ ROUTING = {
     },
     "vibeproxy": {
         TIER_CHEAP: os.getenv("VIBE_CHEAP_MODEL", "claude-haiku-4-5"),
-        TIER_HARD:  os.getenv("VIBE_MODEL",       "claude-sonnet-4-5"),
+        TIER_HARD:  os.getenv("VIBE_MODEL",       "claude-sonnet-4-5-20250929"),
     },
 }
 
@@ -401,7 +404,7 @@ All checks passed.
 **Expected output (vibeproxy backend):**
 
 ```
-[Chat] backend=vibeproxy  model=claude-sonnet-4-5
+[Chat] backend=vibeproxy  model=claude-sonnet-4-5-20250929
   Response: 2 + 2 equals 4 because ...
   PASS
 

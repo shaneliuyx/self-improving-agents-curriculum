@@ -426,7 +426,7 @@ AGENT_BACKEND=omlx python skills/lab_demo.py
 
 # With VibeProxy (Claude subscription, embeddings still local):
 # Note: using a subscription via a local proxy may violate provider ToS.
-AGENT_BACKEND=vibeproxy VIBE_MODEL=claude-sonnet-4-5 python skills/lab_demo.py
+AGENT_BACKEND=vibeproxy VIBE_MODEL=claude-sonnet-4-5-20250929 python skills/lab_demo.py
 ```
 
 Expected output:
