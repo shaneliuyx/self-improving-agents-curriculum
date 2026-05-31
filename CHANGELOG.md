@@ -3,6 +3,17 @@
 All notable changes to the curriculum and scaffold. The `/improve-curriculum` command
 appends a dated entry here each time it refreshes the material from new sources.
 
+## 2026-05-31 — Behavior eval extended (reflection, skill, verify-gate, DGM)
+
+- **`evals/behavior_test.py` grown to 9 checks across two tiers:**
+  - Backend-independent (run in CI, no LLM): the verify gate ACCEPT / REJECT-regression / REJECT-malformed
+    logic (the keep/discard *decision*), and a Skill save -> load -> list round-trip.
+  - Backend-dependent: tool use (`396` on both backends), embeddings, reflection -> `Lessons`,
+    `propose_skill`, semantic `search_skills`, and DGM evolve **discard** (a worse variant is rejected by
+    the gate).
+- Verified live: **all 9 PASS** against oMLX + VibeProxy; the CI tier (2 checks) passes with no backend.
+  The CI `behavior-eval` job now asserts real gate + persistence behavior, not just a skip.
+
 ## 2026-05-31 — Behavior-eval regression guard
 
 - **New `evals/behavior_test.py`**: asserts the agent *executes* the calculator tool and returns `396`

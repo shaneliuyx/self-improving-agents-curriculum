@@ -2,15 +2,25 @@
 evals/behavior_test.py - behavior regression guard.
 
 Most tests check that code COMPILES. This checks that the agent actually
-*behaves* correctly against whatever backends are reachable:
-  - tool USE: the agent runs the calculator tool and returns 396 (not the raw
-    tool-call text). This guards the native tool_calls path (VibeProxy/Claude)
-    AND the text-tool-call fallback in agent/loop.py (oMLX small models).
-  - embeddings: MemoryStore can embed locally and rank the right memory first.
+*behaves* correctly. It has two tiers:
 
-Backends that are not running are SKIPPED, so this is safe to run in CI (where
-nothing is reachable - it just prints SKIP and exits 0). It only FAILS when a
-reachable backend produces wrong behavior - i.e. a genuine regression.
+  BACKEND-INDEPENDENT (run always, including in CI - no LLM call):
+    - verify gate: ACCEPT a real improvement, REJECT a regression, REJECT a
+      malformed proposal. This is the keep/discard DECISION logic (Module 07).
+    - skill persistence: a Skill round-trips through save -> load -> list.
+
+  BACKEND-DEPENDENT (run only against REACHABLE backends):
+    - tool USE: the agent runs the calculator and returns 396 (native tool_calls
+      on Claude; text-tool-call fallback on oMLX).
+    - embeddings: MemoryStore embeds locally and ranks the right memory.
+    - reflection: a trajectory -> structured Lessons (Module 05).
+    - skill propose: a trajectory -> a Skill proposal without error (Module 06).
+    - skill search: semantic retrieval finds a saved skill (Module 06).
+    - DGM evolve discard: a worse variant is REJECTED by the gate (Module 08).
+
+Backends that are down are SKIPPED, so this is safe in CI (the independent tier
+still runs and asserts real behavior; the dependent tier skips). It only FAILS
+on a genuine behavior regression.
 
 Run locally (with a backend up):
     OMLX_API_KEY=... OMLX_MODEL=Qwen2.5-Coder-7B-Instruct-4bit \
@@ -18,17 +28,18 @@ Run locally (with a backend up):
     VIBE_MODEL=claude-sonnet-4-5-20250929 \
     python -m evals.behavior_test
 
-Exit codes: 0 = all reachable backends passed (or none reachable); 1 = a failure.
+Exit codes: 0 = all run checks passed; 1 = a failure.
 """
 
 from __future__ import annotations
 
+import pathlib
 import socket
 import sys
+import tempfile
 
 
 def _reachable(host: str, port: int, timeout: float = 1.0) -> bool:
-    """True if a TCP connection to host:port succeeds quickly."""
     try:
         with socket.create_connection((host, port), timeout):
             return True
@@ -36,26 +47,63 @@ def _reachable(host: str, port: int, timeout: float = 1.0) -> bool:
         return False
 
 
+# ---------------------------------------------------------------------------
+# Backend-INDEPENDENT checks (no LLM call - run even in CI)
+# ---------------------------------------------------------------------------
+
+def _check_verify_gate() -> tuple[bool, str]:
+    """The gate ACCEPTs a real improvement, REJECTs a regression and a bad proposal."""
+    from verification.gates import VerdictStatus, verify
+
+    good = verify({"type": "prompt", "content": "x"}, candidate_score=0.8,
+                  baseline_score=0.5, run_safety_check=False)
+    regr = verify({"type": "prompt", "content": "x"}, candidate_score=0.4,
+                  baseline_score=0.5, run_safety_check=False)
+    bad = verify({}, candidate_score=0.8, baseline_score=0.5, run_safety_check=False)
+
+    ok = (good.accepted
+          and regr.status == VerdictStatus.REJECT
+          and bad.status == VerdictStatus.REJECT)
+    return ok, f"improve={good.status.value} regression={regr.status.value} malformed={bad.status.value}"
+
+
+def _check_skill_persist() -> tuple[bool, str]:
+    """A Skill round-trips through save -> load -> list (uses a temp skills dir)."""
+    from config import settings
+    from skills.library import Skill, list_skills, load_skill, save_skill
+
+    settings.skills_dir = pathlib.Path(tempfile.mkdtemp())  # isolate from the real library
+    sk = Skill(
+        name="use_calculator",
+        description="Use the calculator tool for any arithmetic.",
+        trigger="when the task requires arithmetic computation",
+        steps=["call the calculator tool with the expression", "return its result"],
+        eval_score=0.9,
+        source_task="17 * 23 + 5",
+    )
+    save_skill(sk)
+    loaded = load_skill("use_calculator")
+    ok = (loaded is not None and loaded.name == "use_calculator"
+          and loaded.steps == sk.steps and "use_calculator" in list_skills())
+    return ok, f"loaded={(loaded.name if loaded else None)!r} list={list_skills()}"
+
+
+# ---------------------------------------------------------------------------
+# Backend-DEPENDENT checks
+# ---------------------------------------------------------------------------
+
 def _check_tool_use(backend: str) -> tuple[bool, str]:
-    """Assert the agent executes the calculator tool and answers 396."""
+    """The agent executes the calculator tool and answers 396."""
     from agent.loop import run_agent
 
-    r = run_agent(
-        "What is 17 * 23 + 5? Use the calculator tool.",
-        max_rounds=5,
-        backend=backend,
-    )
+    r = run_agent("What is 17 * 23 + 5? Use the calculator tool.", max_rounds=5, backend=backend)
     tool_ran = any(s.role == "tool" and s.tool_name == "calculator" for s in r.trajectory)
     correct = "396" in (r.answer or "")
-    detail = f"tool_ran={tool_ran} answer_has_396={correct} stop={r.stop_reason} rounds={r.rounds_used}"
-    return (tool_ran and correct), detail
+    return (tool_ran and correct), f"tool_ran={tool_ran} has_396={correct} stop={r.stop_reason}"
 
 
 def _check_embeddings() -> tuple[bool, str]:
-    """Assert MemoryStore embeds locally (oMLX) and ranks the right memory first."""
-    import pathlib
-    import tempfile
-
+    """MemoryStore embeds locally (oMLX) and ranks the right memory first."""
     from memory.store import MemoryStore
 
     ms = MemoryStore(db_path=pathlib.Path(tempfile.mktemp(suffix=".db")))
@@ -66,24 +114,81 @@ def _check_embeddings() -> tuple[bool, str]:
     finally:
         ms.close()
     ok = bool(hits) and "cheap" in hits[0].content.lower()
-    return ok, f"top_hit={(hits[0].content[:48] if hits else None)!r}"
+    return ok, f"top_hit={(hits[0].content[:44] if hits else None)!r}"
 
+
+def _check_reflection(backend: str) -> tuple[bool, str]:
+    """A completed trajectory produces structured Lessons via the LLM."""
+    from agent.loop import run_agent
+    from reflection.reflect import Lessons, reflect_on_trajectory
+
+    r = run_agent("What is 12 + 30? Use the calculator tool.", max_rounds=4, backend=backend)
+    lessons = reflect_on_trajectory(r, save_to_memory=False)
+    ok = (isinstance(lessons, Lessons) and bool(lessons.raw_response)
+          and isinstance(lessons.confidence, float) and bool(lessons.heuristic))
+    return ok, f"heuristic={lessons.heuristic[:40]!r} conf={lessons.confidence}"
+
+
+def _check_skill_propose(backend: str) -> tuple[bool, str]:
+    """propose_skill runs over a real trajectory and returns a Skill (or None) cleanly."""
+    from agent.loop import run_agent
+    from skills.library import Skill, propose_skill
+
+    r = run_agent("What is 9 * 9? Use the calculator tool.", max_rounds=4, backend=backend)
+    summary = (f"Task: {r.task}\nAnswer: {r.answer}\n"
+               f"Tools: {[(s.tool_name, s.tool_result) for s in r.trajectory if s.role == 'tool']}")
+    sk = propose_skill(summary, source_task=r.task)
+    ok = sk is None or (isinstance(sk, Skill) and bool(sk.name) and isinstance(sk.steps, list))
+    return ok, f"proposed={(sk.name if sk else None)!r}"
+
+
+def _check_skill_search() -> tuple[bool, str]:
+    """Semantic skill retrieval finds the calculator skill saved by _check_skill_persist."""
+    from skills.library import search_skills
+
+    hits = search_skills("I need to do an arithmetic calculation", top_k=3)
+    ok = any(s.name == "use_calculator" for s in hits)
+    return ok, f"found={[s.name for s in hits]}"
+
+
+def _check_evolve_discard() -> tuple[bool, str]:
+    """A worse variant (fake low eval score) is REJECTED by the keep/discard gate."""
+    from config import settings
+    from evolve.loop import EvolutionResult, run_evolution_step
+
+    settings.evolve_archive_dir = pathlib.Path(tempfile.mkdtemp())  # isolate the archive
+    res = run_evolution_step(
+        baseline_prompt="You are a helpful agent. Use tools when needed.",
+        baseline_score=0.5,
+        eval_fn=lambda _prompt: 0.1,   # candidate scores worse than baseline
+    )
+    ok = isinstance(res, EvolutionResult) and res.accepted is False
+    return ok, f"accepted={res.accepted} reason={res.verdict_reason[:48]!r}"
+
+
+# ---------------------------------------------------------------------------
+# Runner
+# ---------------------------------------------------------------------------
 
 def main() -> int:
+    results: list[tuple[str, bool, str]] = []
+
+    # --- always-on (CI-safe, no backend) ---
+    results.append(("verify-gate logic", *_check_verify_gate()))
+    results.append(("skill persist+retrieve", *_check_skill_persist()))
+
     omlx_up = _reachable("localhost", 8000)
     vibe_up = _reachable("localhost", 8317)
-
-    if not omlx_up and not vibe_up:
-        print("SKIP: no backend reachable (oMLX :8000 / VibeProxy :8317). Nothing to verify.")
-        return 0
-
-    results: list[tuple[str, bool, str]] = []
 
     if omlx_up:
         results.append(("oMLX tool-use", *_check_tool_use("omlx")))
         results.append(("oMLX embeddings", *_check_embeddings()))
+        results.append(("reflection pipeline", *_check_reflection("omlx")))
+        results.append(("skill propose", *_check_skill_propose("omlx")))
+        results.append(("skill search (embeddings)", *_check_skill_search()))
+        results.append(("DGM evolve discard", *_check_evolve_discard()))
     else:
-        print("skip: oMLX :8000 not reachable")
+        print("skip: oMLX :8000 not reachable (tool-use/embeddings/reflection/skill/evolve)")
 
     if vibe_up:
         results.append(("VibeProxy tool-use", *_check_tool_use("vibeproxy")))
@@ -97,9 +202,9 @@ def main() -> int:
         failed += 0 if ok else 1
 
     if failed:
-        print(f"\n{failed} behavior check(s) FAILED")
+        print(f"\n{failed} of {len(results)} behavior check(s) FAILED")
         return 1
-    print(f"\nAll {len(results)} reachable-backend behavior check(s) PASSED")
+    print(f"\nAll {len(results)} behavior check(s) PASSED")
     return 0
 
 
