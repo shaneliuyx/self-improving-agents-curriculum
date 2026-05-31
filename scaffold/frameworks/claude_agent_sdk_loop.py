@@ -82,11 +82,25 @@ async def run(task: str) -> str:
     options = _build_options(server)
 
     out: list[str] = []
-    async for message in query(prompt=task, options=options):
-        if isinstance(message, AssistantMessage):
-            for block in message.content:
-                if isinstance(block, TextBlock):
-                    out.append(block.text)
+    try:
+        async for message in query(prompt=task, options=options):
+            if isinstance(message, AssistantMessage):
+                for block in message.content:
+                    if isinstance(block, TextBlock):
+                        out.append(block.text)
+    except Exception as exc:  # noqa: BLE001
+        # The SDK raises on an error ResultMessage with a confusing string
+        # ("error result: success" - its subtype is 'success' even when
+        # is_error is True). The real reason is usually the assistant text we
+        # already collected (e.g. "Credit balance is too low"). Surface it.
+        detail = "; ".join(t for t in out if t.strip()) or str(exc)
+        raise RuntimeError(
+            f"Claude Agent SDK call did not complete: {detail}. "
+            "If this is a billing error, the bundled Claude Code must be "
+            "authenticated with your Claude subscription (run `claude` once to log "
+            "in so the SDK uses subscription usage, not metered API credits), or the "
+            "account needs API credits."
+        ) from exc
     return "\n".join(out).strip()
 
 
@@ -101,6 +115,10 @@ def _demo() -> None:
         answer = anyio.run(run, "What is 17 * 23 + 5? Use the calculate tool.")
     except ImportError as exc:
         print(exc)
+        return
+    except RuntimeError as exc:
+        # e.g. billing/auth: surfaced cleanly by run() instead of a raw traceback.
+        print("error:", exc)
         return
     print("answer:", answer)
 

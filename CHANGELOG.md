@@ -3,6 +3,17 @@
 All notable changes to the curriculum and scaffold. The `/improve-curriculum` command
 appends a dated entry here each time it refreshes the material from new sources.
 
+## 2026-05-31 — Claude Agent SDK verified live + robust error handling
+
+- **Verified `claude_agent_sdk_loop.py` against `claude-agent-sdk` 0.2.87**: all imported symbols match the
+  real API; it compiles, authenticates via the bundled Claude Code, and registers the in-process
+  `mcp__lab__calculate` tool. The machinery works end to end.
+- **Observed billing block**: the model turn returned `billing_error: "Credit balance is too low"` - the
+  SDK billed metered API credits, not the subscription. Documented the fix in note 13 (log in with
+  `claude` so it uses subscription usage, or add API credits).
+- **Hardened the adapter**: the SDK raises a confusing "error result: success" on error results; the
+  adapter now catches it and surfaces the real reason (e.g. "Credit balance is too low") with guidance.
+
 ## 2026-05-31 — oMLX API-key support + live end-to-end verification
 
 - **Fixed: oMLX requires an API key.** The baked-in "local servers ignore the key" assumption was
