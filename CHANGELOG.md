@@ -3,6 +3,15 @@
 All notable changes to the curriculum and scaffold. The `/improve-curriculum` command
 appends a dated entry here each time it refreshes the material from new sources.
 
+## 2026-05-31 — Claude Agent SDK fully verified (subscription path works)
+
+- **Confirmed working**: with `claude-agent-sdk` 0.2.87 the adapter returns the correct answer
+  (`17 * 23 + 5 = 396`) using the in-process calculate tool, on the Claude subscription.
+- **Root cause of the earlier billing block**: an `ANTHROPIC_API_KEY` in the environment forces the
+  bundled Claude Code onto metered API credits (which were $0). The adapter now defaults to the
+  subscription by removing that key for the call (`prefer_subscription=True`, restored after);
+  `prefer_subscription=False` keeps API billing. Note 13 updated to "verified working".
+
 ## 2026-05-31 — Claude Agent SDK verified live + robust error handling
 
 - **Verified `claude_agent_sdk_loop.py` against `claude-agent-sdk` 0.2.87**: all imported symbols match the

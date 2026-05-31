@@ -25,6 +25,8 @@ Run:      python -m frameworks.claude_agent_sdk_loop  # uses your Claude subscri
 
 from __future__ import annotations
 
+import os
+
 
 def _build_options(server):
     """Build ClaudeAgentOptions wiring our in-process calculator tool."""
@@ -41,7 +43,7 @@ def _build_options(server):
     )
 
 
-async def run(task: str) -> str:
+async def run(task: str, prefer_subscription: bool = True) -> str:
     """
     Run one task through the Claude Agent SDK loop and return the assistant text.
 
@@ -81,6 +83,13 @@ async def run(task: str) -> str:
     server = create_sdk_mcp_server(name="lab-tools", version="1.0.0", tools=[calculate])
     options = _build_options(server)
 
+    # The bundled Claude Code bills METERED API CREDITS when ANTHROPIC_API_KEY is
+    # set in the environment, and the SUBSCRIPTION (included usage) when it is not.
+    # The curriculum's premise is no-paid-API, so default to the subscription by
+    # removing the key for the duration of this call (restored in finally). Pass
+    # prefer_subscription=False to keep API-credit billing instead.
+    saved_key = os.environ.pop("ANTHROPIC_API_KEY", None) if prefer_subscription else None
+
     out: list[str] = []
     try:
         async for message in query(prompt=task, options=options):
@@ -101,6 +110,9 @@ async def run(task: str) -> str:
             "in so the SDK uses subscription usage, not metered API credits), or the "
             "account needs API credits."
         ) from exc
+    finally:
+        if saved_key is not None:
+            os.environ["ANTHROPIC_API_KEY"] = saved_key
     return "\n".join(out).strip()
 
 

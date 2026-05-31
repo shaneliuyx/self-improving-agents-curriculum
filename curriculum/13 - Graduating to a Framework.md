@@ -156,8 +156,10 @@ async for message in query(prompt="What is 17 * 23?", options=options):
 > [!warning] It does not fit the oMLX-local track
 > The Claude Agent SDK speaks the Claude Code / Anthropic shape, not an OpenAI-compatible local endpoint, so it ignores `base_url`. oMLX-local users stay on `agent/loop.py` or `frameworks/pydantic_ai_loop.py`. Run it with `python -m frameworks.claude_agent_sdk_loop` (needs an active Claude subscription).
 
-> [!note] Billing - subscription vs. API credits (verified live, 2026-05-31)
-> Tested with `claude-agent-sdk` 0.2.87: the adapter's imports all match the real API, it compiles, authenticates, and registers the `mcp__lab__calculate` tool - the machinery works end to end. But the model turn can return `billing_error: "Credit balance is too low"` when the bundled Claude Code bills **metered API credits** instead of your subscription. Fix: run `claude` once to log in with your subscription so the SDK uses included usage, or top up API credits. (The SDK reports this as a confusing "error result: success"; the adapter now surfaces the real reason.)
+> [!success] Verified working (live, 2026-05-31)
+> Tested against `claude-agent-sdk` 0.2.87: the adapter authenticates via the bundled Claude Code, registers the `mcp__lab__calculate` tool, and the model uses it to return the correct answer (`17 * 23 + 5 = 396`).
+>
+> **Root cause of an early failure:** an `ANTHROPIC_API_KEY` in the environment makes the SDK bill **metered API credits** (which were at $0) instead of your subscription, giving `billing_error: "Credit balance is too low"`. The adapter now defaults to the subscription by removing `ANTHROPIC_API_KEY` for the call (`prefer_subscription=True`, restored afterward); pass `prefer_subscription=False` to keep API-credit billing. (The SDK reports billing failures as a confusing "error result: success"; the adapter surfaces the real reason.)
 
 ---
 
