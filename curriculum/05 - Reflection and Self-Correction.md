@@ -2,7 +2,7 @@
 title: "Reflection and Self-Correction"
 tags: [self-improving-agents, curriculum, reflection, self-correction, metacognition]
 module: 05
-updated: 2026-05-31
+updated: 2026-06-01
 ---
 
 # 05 · Reflection and Self-Correction
@@ -31,6 +31,8 @@ After every task run the agent has two artifacts: the **trajectory** (the full s
 The word "reflection" is overloaded. In this curriculum it always means the REFLECT step of the canonical loop - a deliberate, LLM-driven critique pass that happens *after* the run ends, writes structured lessons to memory, and feeds into the LEARN step (Modules 06 and 08). It is not in-context chain-of-thought reasoning that occurs *during* a run (that is covered under in-task self-correction in Section 3).
 
 [Experiential Reflective Learning (ERL)](https://arxiv.org/pdf/2603.24639) formalizes this distinction: "experiential" means the agent accumulates lessons *across* experiences rather than just reasoning within one context window. The key insight is that the lesson store outlives any single run - it is persistent memory, not just a longer prompt.
+
+[SAMULE](https://arxiv.org/abs/2509.20562) (EMNLP 2025) refines *what* to reflect on by synthesising reflections at three complementary levels: micro (single-trajectory - analyse one failed run and generate a targeted fix), meso (intra-task - examine multiple trajectories of the same task to build an error taxonomy), and macro (inter-task - cluster similar errors across different tasks to derive transferable insight). The practical lesson for the REFLECT step below is that not all reflection is equal: a per-run lesson (micro) is cheap but narrow, while the transferable macro insight - the kind worth promoting into a reusable skill via [[06 - Skill Acquisition and Curation]] - only emerges once you reflect *across* tasks, not just across runs of one task. SAMULE reports that this failure-centric, multi-level synthesis significantly outperforms flat reflection baselines on TravelPlanner, NATURAL PLAN, and Tau-bench.
 
 ---
 

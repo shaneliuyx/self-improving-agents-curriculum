@@ -3,6 +3,21 @@
 All notable changes to the curriculum and scaffold. The `/improve-curriculum` command
 appends a dated entry here each time it refreshes the material from new sources.
 
+## 2026-06-01 — Refresh from last-30-days sources (SkillOpt, SAMULE)
+
+- **Note 06 (Skill Acquisition):** added [SkillOpt](https://arxiv.org/abs/2605.23904) (Microsoft,
+  May 2026) - treats the skill document as the *trainable external state* of a frozen agent; a
+  separate optimizer model proposes bounded add/delete/replace edits accepted only when they
+  improve a held-out validation score. Reinforces the module's PROPOSE -> VALIDATE gate and the
+  [[07 - Verification Gates and Layered Control]] thesis; best-or-tied on all 52 (model, benchmark,
+  harness) cells including Claude Code, at zero added inference-time cost.
+- **Note 05 (Reflection):** added [SAMULE](https://arxiv.org/abs/2509.20562) (EMNLP 2025) -
+  multi-level reflection synthesis at micro (single-trajectory), meso (intra-task error taxonomy),
+  and macro (cross-task transferable insight) levels; clarifies that only macro-level reflection
+  yields the transferable lessons worth promoting into reusable skills.
+- Additive, sourced edits only; wikilinks/mermaid/citations audited; scaffold `py_compile` green.
+  Driving signal: last30days research + arXiv (2605.23904, 2509.20562).
+
 ## 2026-05-31 — Behavior eval extended (reflection, skill, verify-gate, DGM)
 
 - **`evals/behavior_test.py` grown to 9 checks across two tiers:**

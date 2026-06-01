@@ -2,7 +2,7 @@
 title: "Skill Acquisition and Curation"
 tags: [self-improving-agents, curriculum, skills, voyager, skill-library]
 module: 06
-updated: 2026-05-31
+updated: 2026-06-01
 ---
 
 # 06 · Skill Acquisition and Curation
@@ -478,6 +478,8 @@ Skill acquisition is the LEARN step, but it does not operate in isolation:
 - If a skill encodes a structural change to the agent itself (not just a utility function), that escalates to [[08 - Self-Modification - The DGM Pattern]], which applies stronger sandboxing and rollback requirements.
 
 The [Muse-Autoskill](https://arxiv.org/abs/2605.27366) paper shows that the compounding benefit of a skill library only materialises when retrieval quality is high and the library remains curated. A bloated, uncurated library degrades performance below the no-skill baseline after a few hundred entries. Curation is not optional maintenance - it is load-bearing.
+
+[SkillOpt](https://arxiv.org/abs/2605.23904) (May 2026) pushes this one step further: instead of one-shot proposal plus loose self-revision, it treats the skill document as the *trainable external state* of a frozen agent and runs a separate optimizer model that turns scored rollouts into bounded add/delete/replace edits - accepting an edit only when it strictly improves a held-out validation score. That validation gate is the same discipline our PROPOSE -> VALIDATE pipeline above enforces (and the broader principle in [[07 - Verification Gates and Layered Control]]); SkillOpt formalises it as a textbook optimizer loop with a learning-rate budget and a rejected-edit buffer, and reports best-or-tied results on all 52 (model, benchmark, harness) cells - including the Claude Code harness - at zero added inference-time cost. The takeaway for this scaffold: "evolve the skill" should mean "gated optimization against held-out tasks," not "ask the model to rewrite its own skill and hope."
 
 ---
 
