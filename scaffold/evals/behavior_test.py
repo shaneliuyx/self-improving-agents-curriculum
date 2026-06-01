@@ -67,6 +67,29 @@ def _check_verify_gate() -> tuple[bool, str]:
     return ok, f"improve={good.status.value} regression={regr.status.value} malformed={bad.status.value}"
 
 
+def _check_edit_recover() -> tuple[bool, str]:
+    """The write->verify->recover chain (Stage 4 / the article's flagship):
+    edit_file applies a unique anchored edit atomically and returns a snapshot;
+    an ambiguous anchor is refused; and a write to a capability-scoped dir
+    (verification/) is denied BY PATH before the file is even read. No LLM."""
+    import agent.tools as t
+
+    root = t._PROJECT_ROOT.resolve()
+    p = root / "outputs" / "_behaviortest_edit.py"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        p.write_text("def add(a, b):\n    return a - b  # bug\n")
+        good = t._tool_edit_file("outputs/_behaviortest_edit.py", "a - b", "a + b")
+        applied = good.get("ok") and "a + b" in p.read_text() and "a - b" in good.get("snapshot", "")
+        p.write_text("dup\ndup\n")
+        ambiguous = "ambiguous" in t._tool_edit_file("outputs/_behaviortest_edit.py", "dup", "x").get("error", "")
+        denied = "denied" in t._tool_edit_file("verification/gates.py", "def verify", "def hacked").get("error", "").lower()
+    finally:
+        p.unlink(missing_ok=True)
+    ok = bool(applied and ambiguous and denied)
+    return ok, f"apply+snapshot={bool(applied)} ambiguous-refused={ambiguous} forbidden-denied={denied}"
+
+
 def _check_skill_persist() -> tuple[bool, str]:
     """A Skill round-trips through save -> load -> list (uses a temp skills dir)."""
     from config import settings
@@ -115,6 +138,24 @@ def _check_embeddings() -> tuple[bool, str]:
         ms.close()
     ok = bool(hits) and "cheap" in hits[0].content.lower()
     return ok, f"top_hit={(hits[0].content[:44] if hits else None)!r}"
+
+
+def _check_memory_injection() -> tuple[bool, str]:
+    """The READ side of the experience layer: a stored lesson is retrieved and
+    formatted into an injectable <memory_context> block, and an empty store
+    degrades to an empty string (never breaks the loop). Guards the write-only
+    gap that Stage 3 closed - reflection writes lessons the loop must read back."""
+    from memory.store import MemoryStore
+
+    ms = MemoryStore(db_path=pathlib.Path(tempfile.mktemp(suffix=".db")))
+    try:
+        empty = ms.inject_context("anything")          # no memories yet
+        ms.add("semantic", "Always use the calculator tool for arithmetic.")
+        ctx = ms.inject_context("how do I add two numbers")
+    finally:
+        ms.close()
+    ok = (empty == "") and ("<memory_context>" in ctx) and ("calculator" in ctx.lower())
+    return ok, f"empty={empty!r} injected={'<memory_context>' in ctx}"
 
 
 def _check_reflection(backend: str) -> tuple[bool, str]:
@@ -175,6 +216,7 @@ def main() -> int:
 
     # --- always-on (CI-safe, no backend) ---
     results.append(("verify-gate logic", *_check_verify_gate()))
+    results.append(("write-verify-recover chain", *_check_edit_recover()))
     results.append(("skill persist+retrieve", *_check_skill_persist()))
 
     omlx_up = _reachable("localhost", 8000)
@@ -183,6 +225,7 @@ def main() -> int:
     if omlx_up:
         results.append(("oMLX tool-use", *_check_tool_use("omlx")))
         results.append(("oMLX embeddings", *_check_embeddings()))
+        results.append(("memory injection (read-side)", *_check_memory_injection()))
         results.append(("reflection pipeline", *_check_reflection("omlx")))
         results.append(("skill propose", *_check_skill_propose("omlx")))
         results.append(("skill search (embeddings)", *_check_skill_search()))

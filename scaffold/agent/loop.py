@@ -129,27 +129,49 @@ def run_agent(
     system_prompt: str | None = None,
     max_rounds: int | None = None,
     backend: str | None = None,
+    difficulty: str = "medium",
+    system_override: str | None = None,
+    memory: Any | None = None,
 ) -> AgentResult:
     """
     Run the ReAct agent on a single task.
 
     Args:
-        task:           The user's task string.
-        system_prompt:  Override the default system prompt (used by evolve/loop.py
-                        to test mutated prompts).
-        max_rounds:     Override settings.agent_max_rounds.
-        backend:        Override the generation backend.
+        task:            The user's task string.
+        system_prompt:   Override the default system prompt (used by evolve/loop.py
+                         to test mutated prompts).
+        system_override: Alias for system_prompt (used by the eval harness).
+        max_rounds:      Override settings.agent_max_rounds.
+        backend:         Override the generation backend.
+        difficulty:      Task difficulty for model routing - "trivial"|"easy"|
+                         "medium"|"hard"|"critical". The eval harness passes
+                         task.difficulty so routing is adaptive, not hardcoded.
+        memory:          Optional MemoryStore. When provided, relevant past
+                         lessons are retrieved and injected BEFORE the loop -
+                         this is the read side of the experience layer (Module 04).
 
     Returns:
         AgentResult with answer, full trajectory, and metadata.
     """
     max_r = max_rounds or settings.agent_max_rounds
-    sys_prompt = system_prompt or _build_system_prompt()
+    sys_prompt = system_override or system_prompt or _build_system_prompt()
 
-    # Route based on task difficulty (medium = general tasks)
-    route_decision = route("medium")
+    # Route by the task's difficulty (not a hardcoded constant), and HONOR the
+    # routed model - make_client() returns the backend default, so we must pass
+    # route_decision.model through to actually change model size.
+    route_decision = route(difficulty)
     effective_backend = backend or route_decision.backend
-    client, model = make_client(effective_backend)
+    client, default_model = make_client(effective_backend)
+    # Use the routed model unless the caller forced a different backend (in which
+    # case the routed model may not exist on it, so fall back to that backend's default).
+    model = route_decision.model if backend is None else default_model
+
+    # Read side of the experience layer: inject relevant past lessons before ACT.
+    # Without this, reflection writes lessons the loop never reads (write-only gap).
+    if memory is not None:
+        mem_ctx = memory.inject_context(task)
+        if mem_ctx:
+            sys_prompt = f"{sys_prompt}\n\n{mem_ctx}"
 
     # Build the conversation history
     messages: list[dict[str, Any]] = [

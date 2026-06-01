@@ -232,6 +232,54 @@ class MemoryStore:
         scored.sort(key=lambda x: x[0], reverse=True)
         return [entry for _, entry in scored[:top_k]]
 
+    def inject_context(self, query: str, k: int = 4) -> str:
+        """
+        Retrieve the top-k memories relevant to `query` and format them as a
+        compact `<memory_context>` block for injection into the agent's system
+        prompt BEFORE it acts. This is the read side of the experience layer:
+        without it, reflection writes lessons that the loop never reads back,
+        so the agent restarts blind on every task (the write-only gap).
+
+        Returns "" (empty string) when there is nothing useful to inject -
+        no memories yet, or embeddings unavailable - so the caller can safely
+        concatenate the result unconditionally. Never raises: a memory miss
+        must not break the ACT loop.
+        """
+        try:
+            hits = self.search(query, top_k=k)
+        except Exception:
+            # Embedding endpoint down / no embeddings: degrade to no context,
+            # never break the loop. The agent simply runs without prior lessons.
+            return ""
+        # Only inject reasonably-relevant hits; a 0.0-similarity row is noise.
+        useful = [h for h in hits if h.similarity > 0.0]
+        if not useful:
+            return ""
+        lines = [
+            f"- ({h.memory_type}, sim={h.similarity:.2f}) {h.content}"
+            for h in useful
+        ]
+        return (
+            "<memory_context>\n"
+            "Relevant lessons from your past experience (use them; do not repeat past mistakes):\n"
+            + "\n".join(lines)
+            + "\n</memory_context>"
+        )
+
+    def record_trajectory(self, trajectory: dict, salience: float = 0.5) -> int:
+        """
+        Convenience wrapper: store one agent trajectory as an episodic memory.
+        `salience` (0-1) is kept in metadata for later recency/salience ranking.
+        Thin sugar over add() so callers (scripts/go, the loop) have a single
+        verb for the RECORD step that note 04 documents.
+        """
+        content = trajectory.get("summary") or json.dumps(trajectory)[:2000]
+        return self.add(
+            "episodic",
+            content,
+            metadata={"salience": float(salience), **trajectory.get("metadata", {})},
+        )
+
     def get_recent(
         self,
         memory_type: str | None = None,

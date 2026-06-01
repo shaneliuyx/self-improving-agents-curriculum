@@ -82,7 +82,14 @@ sample_task = TASKS[0]
 print(f"[1/6] Running sample task: {sample_task.id!r}")
 print(f"      Input: {sample_task.input}")
 
-result = run_agent(task=sample_task.input)
+# Pass the memory store so relevant past lessons are retrieved and injected
+# BEFORE the agent acts (read side of the experience layer), and route by the
+# task's own difficulty rather than a hardcoded constant.
+result = run_agent(
+    task=sample_task.input,
+    difficulty=sample_task.difficulty,
+    memory=store,
+)
 print(f"      Answer: {result.answer[:120]}")
 print(f"      Success: {result.success}  Rounds: {result.rounds_used}  Stop: {result.stop_reason}")
 

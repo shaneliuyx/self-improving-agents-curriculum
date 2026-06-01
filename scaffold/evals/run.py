@@ -104,6 +104,7 @@ def run_evals(
                 task=task.input,
                 system_prompt=system_prompt,
                 backend=backend,
+                difficulty=task.difficulty,   # adaptive routing per task, not hardcoded
             )
             passed = task.checker(agent_result.answer)
             answer = agent_result.answer

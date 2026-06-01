@@ -83,11 +83,11 @@ classDiagram
         +EpisodicStore episodic
         +SemanticStore semantic
         +ProceduralStore procedural
-        +add(content, memory_type, salience) MemoryItem
-        +search(query: str, k: int) list~MemoryItem~
-        +get_recent(memory_type, k) list~MemoryItem~
-        +record_trajectory(trajectory, salience) MemoryItem
-        +inject_context(query: str, k: int) str
+        +add(memory_type, content, metadata) int
+        +search(query, memory_type, top_k) list~MemoryEntry~
+        +get_recent(memory_type, limit) list~MemoryEntry~
+        +record_trajectory(trajectory, salience) int
+        +inject_context(query, k) str
     }
 
     MemoryStore *-- EpisodicStore

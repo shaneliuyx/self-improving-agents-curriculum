@@ -300,7 +300,7 @@ Per the brain/harness/agent framing in [[00 - Curriculum Map]], a production har
 | 2 | Model routing (light for intent, strong for reasoning) | Partial | `backends/router.py` - `route()`/`RouteDecision`, wired at 4 callsites |
 | 3 | Context assembly + compression (per-request budget, not whole-project dump) | Partial | `agent/loop.py` `_build_system_prompt` + memory retrieval; see [[03 - The Minimal Agent Loop]], [[04 - Memory Systems]] |
 | 4 | Tool system (define, dispatch, fail-as-observation) | Full | `agent/tools.py` `TOOL_SCHEMAS`/`dispatch_tool` |
-| 5 | Structured edit / diff-apply with rollback | GAP - exercise | covered by the `apply_patch` tool work; contrast full-file overwrite in [[03 - The Minimal Agent Loop]] |
+| 5 | Structured edit / diff-apply with rollback | Implemented | `agent/tools.py` `edit_file` - anchored old→new edit, unique-anchor validation, atomic write, snapshot for rollback; see [[09 - Sandboxing and Safe Execution]] §4.1 |
 | 6 | Execution environment / sandbox isolation | Partial (taught, worktree-runner build) | [[09 - Sandboxing and Safe Execution]] |
 | 7 | State, memory, checkpoint/rollback | Full (memory) / Partial (checkpoint) | `memory/store.py`; `scripts/commit`; [[04 - Memory Systems]], [[08 - Self-Modification - The DGM Pattern]] |
 | 8 | Scheduling loop (continue / stop / when-to-reflect) | Full (continue-stop) / Partial (adaptive reflect) | `agent/loop.py`, `scripts/go` |

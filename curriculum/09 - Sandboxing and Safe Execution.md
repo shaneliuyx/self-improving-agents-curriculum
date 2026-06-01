@@ -2,7 +2,7 @@
 title: "Sandboxing and Safe Execution"
 tags: [self-improving-agents, curriculum, sandboxing, safety, docker, git-worktrees]
 module: 09
-updated: 2026-05-31
+updated: 2026-06-01
 ---
 
 # 09 · Sandboxing and Safe Execution
@@ -153,6 +153,29 @@ The checkpoint pattern has three phases:
 1. **Snapshot** - commit the current state so it is recoverable (pre-mutation)
 2. **Mutate** - the agent applies its self-modification
 3. **Verify** - run evaluation gates; if they pass, tag the commit as stable; if they fail, revert
+
+### 4.1 File-level edits: anchored diffs, not overwrites
+
+The same snapshot→mutate→verify discipline applies at the *single-file* scale, and this is the harness detail that separates Claude Code from a demo (the agent-harness thesis in [[00 - Curriculum Map]]). A naive "edit a file" tool asks the model to emit the *whole new file* and overwrites the original - which fails the moment a file is more than a few hundred lines (the model drops or mangles code it wasn't even changing). The production pattern is an **anchored diff**: the model emits only a unique `old_str → new_str` pair, and the harness applies it.
+
+The lab's `agent/tools.py` `edit_file` implements exactly this, with four guarantees:
+
+1. **Unique anchor.** `old_str` must appear *exactly once* (0 matches = anchor not found; >1 = ambiguous, refused). This forces the model to include enough surrounding context to be unambiguous, and makes the edit deterministic.
+2. **Atomic write.** The new content is written to a temp file then `os.replace`d in - so a crash mid-write never leaves a half-written source file.
+3. **Snapshot for rollback.** `edit_file` returns the prior content; the verify step (run the tests) decides keep-vs-restore. A failing edit is reverted to the snapshot, not left in place.
+4. **Capability scope.** The write is denied *by path before the file is read* if it targets a self-modification-off-limits dir (`verification/`, `scripts/`, `.git/`) - the agent must not rewrite its own verifier (the L1-prose → L2-enforced move from [[07 - Verification Gates and Layered Control]]).
+
+```python
+# the contract (agent/tools.py::edit_file), in brief:
+#   count = original.count(old_str)
+#   if count == 0: return {"error": "anchor not found"}
+#   if count > 1:  return {"error": "ambiguous anchor"}    # make it unique
+#   updated = original.replace(old_str, new_str, 1)
+#   _safe_write(path, updated)        # capability-scoped + atomic (temp + os.replace)
+#   return {"ok": True, "snapshot": original}   # <- restore target on a downstream test failure
+```
+
+Paired with the `run_tests` tool, this is the **write → verify → recover loop**: the agent edits, runs the tests, and on failure the captured output is fed back into its next turn so it can fix and retry - the agent never has to guess what its edit broke, because the harness translates the consequence back to it.
 
 ```mermaid
 %%{init: {"theme":"neutral","themeVariables":{"fontSize":"16px"},"sequence":{"useMaxWidth":true,"wrap":true}}}%%

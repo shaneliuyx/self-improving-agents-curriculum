@@ -3,6 +3,13 @@
 All notable changes to the curriculum and scaffold. The `/improve-curriculum` command
 appends a dated entry here each time it refreshes the material from new sources.
 
+## 2026-06-01 — Close the self-improvement core + write→verify→recover (scaffold)
+
+Turns two "GAP — exercise" rows of the note-11 Harness Completeness Checklist into "Implemented", with behavior-test regression guards (gate grew 9 → 11 checks, all green on oMLX + VibeProxy).
+
+- **Memory is no longer write-only (Stage 3).** `memory/store.py` gains `inject_context(query, k)` (retrieve top-k relevant lessons, format an injectable `<memory_context>` block, empty-safe) and `record_trajectory()`. `agent/loop.py::run_agent` now accepts `memory=` and injects retrieved lessons BEFORE acting, and `difficulty=` so routing is adaptive (honors `route_decision.model` - previously dropped). `scripts/go` passes `memory=store`; `evals/run.py` passes `difficulty=task.difficulty`. `.env.example` documents distinct `OMLX_SMALL_MODEL`/`OMLX_LARGE_MODEL` so routing is not a no-op. New behavior check: "memory injection (read-side)".
+- **Write→verify→recover chain (Stage 4) - the article's flagship Claude-Code differentiator.** `agent/tools.py` gains `edit_file` (anchored old→new edit, unique-anchor validation, atomic temp+`os.replace` write, snapshot for rollback) and `run_tests` (pytest, output feeds back into the next turn = recovery loop). A capability-scoped `_safe_write`/`_assert_writable` denies writes to `verification/`/`scripts/`/`.git/`/`evals/` BY PATH before the file is read; `read_file` is hardened (Path.parents containment + `.env`/`.pem`/`.key` read blocked, closing a secret-exfiltration path). New behavior check: "write-verify-recover chain". Taught in note 09 §4.1 (anchored diffs vs full-overwrite); note 11 checklist rows updated.
+
 ## 2026-06-01 — Harness layer named + framework-capstone added (notes)
 
 Motivated by the "agent harness" thesis (North@CreaoAI; [Anthropic masterclass](https://www.youtube.com/watch?v=efRIrLXoOVA) "the harness matters as much as the model"; [O'Reilly](https://www.oreilly.com/radar/agent-harness-engineering/)) and a full gap-analysis of the lab/curriculum against that checklist.
