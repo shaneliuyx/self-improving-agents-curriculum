@@ -22,9 +22,10 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
-from backends.adapter import make_client
+from backends.adapter import make_client, _with_retry
 from backends.router import route
 from agent.tools import TOOL_SCHEMAS, dispatch_tool
+from agent.quarantine import quarantine
 from config import settings
 
 
@@ -132,6 +133,7 @@ def run_agent(
     difficulty: str = "medium",
     system_override: str | None = None,
     memory: Any | None = None,
+    log: bool = False,
 ) -> AgentResult:
     """
     Run the ReAct agent on a single task.
@@ -166,6 +168,15 @@ def run_agent(
     # case the routed model may not exist on it, so fall back to that backend's default).
     model = route_decision.model if backend is None else default_model
 
+    # Optional durable run log (observability + replay substrate). Off by
+    # default so the test suite doesn't litter logs/; scripts/go turns it on.
+    logger = None
+    if log:
+        import uuid
+        from agent.runlog import RunLogger
+        logger = RunLogger(run_id=uuid.uuid4().hex[:8])
+        logger.run_start(task, effective_backend, model)
+
     # Read side of the experience layer: inject relevant past lessons before ACT.
     # Without this, reflection writes lessons the loop never reads (write-only gap).
     if memory is not None:
@@ -182,17 +193,21 @@ def run_agent(
     trajectory: list[TrajectoryStep] = []
     answer = ""
     stop_reason = "max_rounds"
+    total_tokens = 0   # token telemetry accumulator (TPM/RPM visibility)
 
-    for round_num in range(1, max_r + 1):
+    try:
+      for round_num in range(1, max_r + 1):
         try:
-            response = client.chat.completions.create(
+            # _with_retry handles transient 429/5xx/timeout/connection blips
+            # with capped backoff; a single rate-limit must not end the run.
+            response = _with_retry(lambda: client.chat.completions.create(
                 model=model,
                 messages=messages,
                 tools=TOOL_SCHEMAS,
                 tool_choice="auto",
                 temperature=0.3,
                 max_tokens=1024,
-            )
+            ))
         except Exception as exc:
             # Surface errors in the trajectory - never silently swallow them
             error_step = TrajectoryStep(
@@ -204,6 +219,10 @@ def run_agent(
             stop_reason = "error"
             answer = f"[Error in round {round_num}: {exc}]"
             break
+
+        # Token telemetry: accumulate usage when the backend reports it.
+        if getattr(response, "usage", None) is not None:
+            total_tokens += getattr(response.usage, "total_tokens", 0) or 0
 
         choice = response.choices[0]
         message = choice.message
@@ -248,18 +267,21 @@ def run_agent(
                 )
                 trajectory.append(step)
 
-                # Feed observation back into messages
+                # Feed observation back - QUARANTINED. Tool output is untrusted
+                # (a file/API can carry injected instructions); framing it as
+                # data keeps it out of the instruction channel. The trajectory
+                # step above keeps the RAW result so the run log stays truthful.
                 messages.append({
                     "role":         "tool",
                     "tool_call_id": tc.id,
-                    "content":      result_text,
+                    "content":      quarantine(result_text, source=tc.function.name),
                 })
 
         # --- Case 1b: text-based tool calls (local models that do not emit
         # the structured tool_calls field - e.g. small models served by oMLX) ---
-        elif _parse_text_tool_calls(message.content or ""):
+        elif (text_calls := _parse_text_tool_calls(message.content or "")):
             messages.append({"role": "assistant", "content": message.content or ""})
-            for name, args in _parse_text_tool_calls(message.content or ""):
+            for name, args in text_calls:
                 tool_result = dispatch_tool(name, args)
                 result_text = json.dumps(tool_result)
                 trajectory.append(TrajectoryStep(
@@ -268,9 +290,11 @@ def run_agent(
                 ))
                 # No tool_call_id exists for a text-parsed call, so feed the
                 # observation back as a user turn (stays OpenAI-compatible).
+                # Same quarantine framing - untrusted output stays untrusted on
+                # the text path too.
                 messages.append({
                     "role": "user",
-                    "content": f"Tool {name} returned: {result_text}. Use it to give the final answer.",
+                    "content": f"Tool {name} returned:\n{quarantine(result_text, source=name)}\nUse it to give the final answer.",
                 })
 
         # --- Case 2: the LLM produced a final answer (no tool call) ---
@@ -284,12 +308,29 @@ def run_agent(
             trajectory.append(step)
             stop_reason = "answer"
             break
+    except KeyboardInterrupt:
+        # Cooperative cancel: a Ctrl-C mid-run finalizes cleanly with the
+        # partial trajectory preserved (and flushed to the run log below)
+        # instead of propagating and losing everything done so far.
+        stop_reason = "interrupted"
+        answer = answer or "[interrupted by user]"
+
+    success = (stop_reason == "answer" and bool(answer))
+
+    # Durable observability: serialize every step + token total to the JSONL run
+    # log (the shared substrate for agent/replay.py). Only when log=True.
+    if logger is not None:
+        for s in trajectory:
+            logger.step(s.round_num, s.role, s.content,
+                        tool_name=s.tool_name, tool_args=s.tool_args)
+        logger.run_end(answer, success, stop_reason, len(trajectory),
+                       total_usage={"total_tokens": total_tokens})
 
     return AgentResult(
         task=task,
         answer=answer,
         trajectory=trajectory,
-        success=(stop_reason == "answer" and bool(answer)),
+        success=success,
         rounds_used=len(trajectory),
         stop_reason=stop_reason,
     )

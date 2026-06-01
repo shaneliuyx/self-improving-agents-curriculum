@@ -22,9 +22,24 @@ See memory/store.py for the embedding client.
 """
 
 import os
-from typing import Any
+import time
+from typing import Any, Callable, TypeVar
 
-from openai import OpenAI
+from openai import (
+    OpenAI,
+    APIConnectionError,
+    APITimeoutError,
+    InternalServerError,
+    RateLimitError,
+)
+
+# Importing config triggers load_dotenv() so .env is populated into os.environ
+# before any os.getenv() below runs. Without this, an entrypoint that imports
+# adapter without first importing config (e.g. evals/behavior_test) silently
+# falls back to the hardcoded defaults instead of reading .env.
+import config as _config  # noqa: F401  (side-effect import: triggers load_dotenv)
+
+_ = _config  # mark as intentionally used (side-effect-only import)
 
 # ---------------------------------------------------------------------------
 # Backend registry
@@ -66,8 +81,44 @@ def make_client(backend: str | None = None) -> tuple[OpenAI, str]:
         os.getenv("OMLX_API_KEY", "not-needed") if key == "omlx"
         else os.getenv("LLM_API_KEY", "not-needed")
     )
-    client = OpenAI(base_url=b["base_url"], api_key=api_key)
+    # Per-request timeout so a hung local model (a large model on 16GB will
+    # crawl) doesn't block forever. We do our OWN retry below, so disable the
+    # SDK's built-in retries to keep the backoff policy in one visible place.
+    timeout_s = float(os.getenv("LLM_TIMEOUT_S", "60"))
+    client = OpenAI(
+        base_url=b["base_url"], api_key=api_key,
+        timeout=timeout_s, max_retries=0,
+    )
     return client, b["model"]
+
+
+# ---------------------------------------------------------------------------
+# Retry policy (hand-rolled - no tenacity dep; the curriculum stays openai+numpy)
+# ---------------------------------------------------------------------------
+# The retryable-vs-fatal taxonomy: these backends are RATE-LIMITED (so 429s are
+# EXPECTED), and a local model can hang (timeout). One transient blip must not
+# end an unattended self-improvement cycle. 4xx-auth/bad-request are FATAL -
+# retrying them just wastes the rate-limit budget.
+_RETRYABLE = (RateLimitError, APITimeoutError, APIConnectionError, InternalServerError)
+_T = TypeVar("_T")
+
+
+def _with_retry(fn: Callable[[], _T], *, max_attempts: int = 4, base_delay: float = 1.0) -> _T:
+    """Call fn(), retrying RETRYABLE errors with capped exponential backoff +
+    jitter. Fatal errors (auth/bad-request) raise immediately - retrying them
+    only burns rate-limit headroom."""
+    for attempt in range(1, max_attempts + 1):
+        try:
+            return fn()
+        except _RETRYABLE:
+            if attempt == max_attempts:
+                raise
+            # capped exponential backoff; deterministic jitter (no random dep)
+            delay = min(base_delay * (2 ** (attempt - 1)), 30.0)
+            jitter = (attempt * 0.137) % 0.5
+            time.sleep(delay + jitter)
+            continue
+    raise RuntimeError("unreachable")  # pragma: no cover
 
 
 def chat(
@@ -93,13 +144,13 @@ def chat(
         The assistant's reply as a plain string.
     """
     client, default_model = make_client(backend)
-    response = client.chat.completions.create(
+    response = _with_retry(lambda: client.chat.completions.create(
         model=model or default_model,
         messages=messages,  # type: ignore[arg-type]  # plain dicts are valid at runtime
         temperature=temperature,
         max_tokens=max_tokens,
         **kwargs,
-    )
+    ))
     return response.choices[0].message.content or ""
 
 

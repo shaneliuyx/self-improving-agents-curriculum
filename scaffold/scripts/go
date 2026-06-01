@@ -67,6 +67,16 @@ sys.path.insert(0, str(project_root))
 from config import settings
 settings.validate()
 
+# Containment: refuse to run if any backend URL left the egress allowlist. A
+# mutated config pointing the agent off loopback is the config-exfiltration
+# signature - catch it before the first request, not after data has left.
+from agent.net_guard import assert_backends_allowed, EgressBlocked
+try:
+    assert_backends_allowed(settings)
+except EgressBlocked as exc:
+    print(f"[net_guard] STARTUP BLOCKED: {exc}", file=sys.stderr)
+    sys.exit(1)
+
 from agent.loop import run_agent
 from memory.store import MemoryStore
 from reflection.reflect import reflect_on_trajectory
@@ -89,6 +99,7 @@ result = run_agent(
     task=sample_task.input,
     difficulty=sample_task.difficulty,
     memory=store,
+    log=True,   # write a durable JSONL run log (logs/run-*.jsonl) for replay/debug
 )
 print(f"      Answer: {result.answer[:120]}")
 print(f"      Success: {result.success}  Rounds: {result.rounds_used}  Stop: {result.stop_reason}")
@@ -148,7 +159,11 @@ if skill:
         proposal={"type": "skill", "name": skill.name, "content": skill.description},
         candidate_score=min(candidate_score, 1.0),
         baseline_score=baseline_score,
-        run_safety_check=False,  # skip LLM safety for speed in demo; enable in production
+        # The LLM safety gate is skipped for demo speed, BUT the deterministic
+        # containment gate (gates._gate_containment) runs unconditionally - so
+        # exec/subprocess/network proposals still ESCALATE here. Flip this to
+        # True in production to add the LLM second opinion on top of the floor.
+        run_safety_check=False,
     )
     print(f"      Verdict: {verdict.status.value.upper()}  -  {verdict.reason}")
 

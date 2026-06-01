@@ -59,6 +59,41 @@ class Verdict:
 
 
 # ---------------------------------------------------------------------------
+# Containment: the deterministic, always-on safety floor
+# ---------------------------------------------------------------------------
+# The article's lesson (NousResearch hermes-agent #29652) is "Layer 1 (prompt)
+# alone failed - move deterministic safety to L2 scripts." The LLM safety gate
+# below (_gate_safety) is itself promptable and is disabled for speed in the
+# demo driver. So the real floor is this: a free, deterministic token scan that
+# runs on EVERY proposal and the agent cannot talk its way past.
+#
+# SANDBOX_REQUIRED_FOR names the capabilities (human-readable) that must run
+# inside the Module 09 sandbox; _SANDBOX_TOKENS are the concrete source tokens
+# that signal them. A proposed skill containing any of these is escalated for
+# human review regardless of the HUMAN_IN_LOOP setting - you never auto-accept
+# code that can touch the filesystem, spawn a process, reach the network, or
+# exec() arbitrary strings, no matter how well it scored on evals.
+SANDBOX_REQUIRED_FOR = ["filesystem", "subprocess", "network", "eval", "exec"]
+
+_SANDBOX_TOKENS: tuple[str, ...] = (
+    "subprocess", "os.system", "os.popen", "pty.spawn",
+    "eval(", "exec(", "compile(", "__import__",
+    "socket", "requests.", "urllib", "httpx", "http.client",
+    "open(", "shutil.rmtree", "os.remove", "os.unlink", "Path.unlink",
+)
+
+
+def requires_sandbox(skill_code: str) -> bool:
+    """True if proposed skill code touches a capability that must be sandboxed
+    (filesystem / subprocess / network / eval / exec).
+
+    Deterministic and free - this is the always-on floor beneath the optional
+    LLM safety gate. Matches the contract documented in Module 11 §4.4.
+    """
+    return any(token in skill_code for token in _SANDBOX_TOKENS)
+
+
+# ---------------------------------------------------------------------------
 # Safety check prompt
 # ---------------------------------------------------------------------------
 
@@ -87,6 +122,25 @@ def _gate_syntax(proposal: dict[str, Any]) -> tuple[bool, str]:
     if not proposal:
         return False, "Proposal is empty."
     return True, "Syntax OK."
+
+
+def _gate_containment(proposal: dict[str, Any]) -> tuple[bool, str]:
+    """Deterministic, always-on containment gate.
+
+    Scans the proposal's code/content for sandbox-required capabilities. Returns
+    (is_contained, reason); is_contained=False means the proposal touches the
+    filesystem/subprocess/network/exec and must be escalated to human review
+    (it cannot be auto-accepted even if it scored well on evals).
+    """
+    code = ""
+    if isinstance(proposal, dict):
+        code = " ".join(
+            str(proposal.get(k, "")) for k in ("content", "code", "body", "description")
+        )
+    if requires_sandbox(code):
+        hits = sorted({t for t in _SANDBOX_TOKENS if t in code})
+        return False, f"requires sandbox (capability tokens: {hits}); needs human review"
+    return True, "no sandboxed capabilities in proposal"
 
 
 def _gate_safety(proposal: dict[str, Any]) -> tuple[bool, str]:
@@ -171,66 +225,53 @@ def verify(
     """
     min_d = min_delta if min_delta is not None else settings.evolve_min_delta
     gate_log: dict[str, Any] = {}
+    delta = candidate_score - baseline_score
+
+    def _verdict(status: VerdictStatus, reason: str) -> Verdict:
+        return Verdict(
+            status=status,
+            reason=reason,
+            score=candidate_score,
+            baseline=baseline_score,
+            delta=delta,
+            details=gate_log,
+        )
 
     # --- Gate 1: Syntax ---
     ok, msg = _gate_syntax(proposal)
     gate_log["syntax"] = msg
     if not ok:
-        return Verdict(
-            status=VerdictStatus.REJECT,
-            reason=f"Syntax gate failed: {msg}",
-            score=candidate_score,
-            baseline=baseline_score,
-            delta=candidate_score - baseline_score,
-            details=gate_log,
-        )
+        return _verdict(VerdictStatus.REJECT, f"Syntax gate failed: {msg}")
+
+    # --- Gate 1b: Containment (deterministic, always on, free) ---
+    # Runs BEFORE regression so a dangerous proposal is escalated even when it
+    # scored well - you never auto-accept exec()/subprocess/network code on the
+    # strength of an eval number. This is the L2 floor the LLM gate sits above.
+    contained, c_msg = _gate_containment(proposal)
+    gate_log["containment"] = c_msg
+    if not contained:
+        return _verdict(VerdictStatus.ESCALATE, f"Containment gate: {c_msg}")
 
     # --- Gate 2: Regression ---
     ok, msg = _gate_regression(candidate_score, baseline_score, min_d)
     gate_log["regression"] = msg
     if not ok:
-        return Verdict(
-            status=VerdictStatus.REJECT,
-            reason=f"Regression gate failed: {msg}",
-            score=candidate_score,
-            baseline=baseline_score,
-            delta=candidate_score - baseline_score,
-            details=gate_log,
-        )
+        return _verdict(VerdictStatus.REJECT, f"Regression gate failed: {msg}")
 
     # --- Gate 3: Safety (LLM-based, skippable for tests) ---
     if run_safety_check:
         is_safe, safety_msg = _gate_safety(proposal)
         gate_log["safety"] = safety_msg
         if not is_safe:
-            return Verdict(
-                status=VerdictStatus.REJECT,
-                reason=f"Safety gate failed: {safety_msg}",
-                score=candidate_score,
-                baseline=baseline_score,
-                delta=candidate_score - baseline_score,
-                details=gate_log,
-            )
+            return _verdict(VerdictStatus.REJECT, f"Safety gate failed: {safety_msg}")
         # If safety check is inconclusive, escalate rather than blindly accept
         if "inconclusive" in safety_msg.lower():
-            return Verdict(
-                status=VerdictStatus.ESCALATE,
-                reason=f"Safety check inconclusive - human review required: {safety_msg}",
-                score=candidate_score,
-                baseline=baseline_score,
-                delta=candidate_score - baseline_score,
-                details=gate_log,
+            return _verdict(
+                VerdictStatus.ESCALATE,
+                f"Safety check inconclusive - human review required: {safety_msg}",
             )
     else:
         gate_log["safety"] = "skipped (run_safety_check=False)"
 
     # All gates passed
-    delta = candidate_score - baseline_score
-    return Verdict(
-        status=VerdictStatus.ACCEPT,
-        reason=f"All gates passed. delta={delta:.3f}",
-        score=candidate_score,
-        baseline=baseline_score,
-        delta=delta,
-        details=gate_log,
-    )
+    return _verdict(VerdictStatus.ACCEPT, f"All gates passed. delta={delta:.3f}")
