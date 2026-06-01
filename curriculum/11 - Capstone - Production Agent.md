@@ -88,7 +88,7 @@ sequenceDiagram
     L->>EV: run eval suite with candidate active
     EV->>EV: execute evals/tasks.py against both baseline and candidate
     EV-->>L: delta score (+0.04 pass-rate improvement)
-    L->>L: delta >= VERIFY_THRESHOLD? (yes)
+    L->>L: delta >= evolve_min_delta? (yes)
     L->>SK: promote candidate to skills/SKILLS/<name>.py
     L->>C: scripts/commit "skill: add <name> (+4pp on eval suite)"
     C->>C: append CHANGELOG.md entry
@@ -128,7 +128,7 @@ cp .env.example .env
 #   AGENT_BACKEND=omlx        # or vibeproxy
 #   OMLX_MODEL=qwen2.5-coder-7b
 #   VIBE_MODEL=claude-sonnet-4-5-20250929
-#   VERIFY_THRESHOLD=0.02     # min eval delta to accept a change
+#   EVOLVE_MIN_DELTA=0.05     # min eval delta to accept a change
 #   HUMAN_IN_LOOP=true        # pause before committing
 pip install -r requirements.txt
 ```
@@ -177,7 +177,7 @@ python -m agent.loop \
   --record-to memory/store.py \
   --reflect-with reflection/reflect.py \
   --verify-with evals/run.py \
-  --threshold "${VERIFY_THRESHOLD:-0.02}" \
+  --threshold "${EVOLVE_MIN_DELTA:-0.05}" \
   --human-in-loop "${HUMAN_IN_LOOP:-true}"
 
 echo "=== Cycle end: $(date -u +%Y-%m-%dT%H:%M:%SZ) ===" | tee -a CHANGELOG.md
@@ -196,77 +196,66 @@ The adapter swaps `base_url` automatically. No other change is needed. The gener
 > [!tip] ToS reminder
 > Using a Claude MAX subscription via VibeProxy routes your OAuth session through a local proxy. This may violate Anthropic's Terms of Service. Evaluate your own risk tolerance before use.
 
-### 3.4 - The core orchestration: evolve/loop.py
+### 3.4 - The core orchestration: the improvement cycle
 
-This is the integration point that wires the subsystems together in code:
+This is the integration point that wires the subsystems together. It is the distilled logic of `scripts/go` (the real driver) - and unlike a sketch, **every import and call below resolves against the scaffold's actual API**. Note the shape: the scaffold is *functional* (`propose_skill()`, `save_skill()`, `run_evals()`), and `verify()` is a pure gate you feed scores into - it decides keep/discard, it does not compute the scores itself.
 
 ```python
-# evolve/loop.py - full integration orchestrator
-import json, os, hashlib, datetime
-from backends.adapter import make_client
+# The end-to-end ACT -> RECORD -> REFLECT -> LEARN -> VERIFY -> COMMIT cycle,
+# distilled from scripts/go. Run it with `./scripts/go`.
+from agent.loop import run_agent
 from memory.store import MemoryStore
-from reflection.reflect import Reflector
-from skills.library import SkillLibrary
-from evals.run import EvalRunner
-from verification.gates import VERIFY_THRESHOLD
+from reflection.reflect import reflect_on_trajectory
+from skills.library import propose_skill, save_skill, list_skills
+from evals.run import run_evals
+from verification.gates import verify, VerdictStatus
+
 
 def run_improvement_cycle(task: str, backend: str | None = None) -> dict:
-    client, model = make_client(backend)
-    memory  = MemoryStore()           # SQLite + oMLX embeddings
-    reflect = Reflector(client, model)
-    skills  = SkillLibrary()
-    evals   = EvalRunner()
+    memory = MemoryStore()                       # SQLite + oMLX embeddings
 
-    # --- ACT ---
-    from agent.loop import run_task
-    trajectory = run_task(task, client, model)
+    # --- ACT (past lessons are injected into the prompt via memory=) ---
+    result = run_agent(task, backend=backend, memory=memory, log=True)
+    print(f"[ACT] success={result.success} stop={result.stop_reason} rounds={result.rounds_used}")
 
-    # --- RECORD ---
-    traj_id = memory.store(trajectory)
-    print(f"[RECORD] trajectory {traj_id} stored")
+    # --- RECORD (persist the trajectory shape for replay/audit) ---
+    memory.record_trajectory({
+        "task": result.task, "answer": result.answer,
+        "success": result.success, "steps": len(result.trajectory),
+    })
+    print(f"[RECORD] trajectory of {len(result.trajectory)} steps stored")
 
-    # --- REFLECT ---
-    proposal = reflect.propose(trajectory, skills.list_current())
-    print(f"[REFLECT] proposal type={proposal['type']} rationale={proposal['rationale'][:80]}")
+    # --- REFLECT (structured lessons -> memory; the read side of the NEXT act) ---
+    lessons = reflect_on_trajectory(result, store=memory)
+    print(f"[REFLECT] heuristic={lessons.heuristic[:60]!r} conf={lessons.confidence}")
 
-    if proposal["type"] == "no_change":
-        return {"committed": False, "reason": "no improvement proposed"}
+    # --- LEARN (propose a reusable skill from the trajectory) ---
+    summary = f"Task: {result.task}\nAnswer: {result.answer}"
+    skill = propose_skill(summary, source_task=task)
+    if skill is None:
+        return {"committed": False, "reason": "no skill proposed"}
+    print(f"[LEARN] candidate skill {skill.name!r}")
 
-    # --- LEARN (write candidate) ---
-    candidate_hash = hashlib.sha256(proposal["content"].encode()).hexdigest()[:8]
-    candidate_path = f"skills/SKILLS/candidate_{candidate_hash}.py"
-    with open(candidate_path, "w") as f:
-        f.write(proposal["content"])
-    print(f"[LEARN] candidate written to {candidate_path}")
-
-    # --- VERIFY ---
-    baseline_score = evals.run(use_candidate=None)
-    candidate_score = evals.run(use_candidate=candidate_path)
-    delta = candidate_score - baseline_score
-    print(f"[VERIFY] baseline={baseline_score:.4f} candidate={candidate_score:.4f} delta={delta:+.4f}")
-
-    if delta < VERIFY_THRESHOLD:
-        rejected_path = f"evolve/archive/rejected/candidate_{candidate_hash}.py"
-        os.rename(candidate_path, rejected_path)
-        print(f"[DISCARD] delta {delta:+.4f} < threshold {VERIFY_THRESHOLD} - discarded")
-        return {"committed": False, "delta": delta, "reason": "below threshold"}
-
-    # --- COMMIT ---
-    skill_name = proposal.get("name", f"skill_{candidate_hash}")
-    final_path = f"skills/SKILLS/{skill_name}.py"
-    os.rename(candidate_path, final_path)
-
-    changelog_entry = (
-        f"\n## {datetime.date.today()} - {skill_name}\n"
-        f"- delta: {delta:+.4f} on eval suite\n"
-        f"- rationale: {proposal['rationale']}\n"
+    # --- VERIFY (min_delta defaults to settings.evolve_min_delta; the always-on
+    #     containment gate from section 4.4 runs UNCONDITIONALLY; run_safety_check
+    #     defaults True so the LLM safety gate also runs) ---
+    baseline = run_evals(backend=backend).score
+    candidate = baseline + (0.1 if result.success else 0.0)   # prod re-scores the suite with the candidate applied
+    verdict = verify(
+        proposal={"type": "skill", "name": skill.name, "content": skill.description},
+        candidate_score=candidate,
+        baseline_score=baseline,
     )
-    with open("CHANGELOG.md", "a") as f:
-        f.write(changelog_entry)
+    print(f"[VERIFY] {verdict.status.value.upper()} (delta={verdict.delta:+.4f}) - {verdict.reason}")
 
-    os.system(f'bash scripts/commit "skill: add {skill_name} ({delta:+.4f} on evals)"')
-    print(f"[COMMIT] {skill_name} committed")
-    return {"committed": True, "delta": delta, "skill": skill_name}
+    if verdict.status is not VerdictStatus.ACCEPT:
+        return {"committed": False, "delta": verdict.delta, "reason": verdict.reason}
+
+    # --- COMMIT (persist the skill; scripts/commit wraps git so it stays revertible) ---
+    skill.eval_score = verdict.score
+    path = save_skill(skill)
+    print(f"[COMMIT] saved {skill.name!r} -> {path.name}; library now {list_skills()}")
+    return {"committed": True, "delta": verdict.delta, "skill": skill.name}
 ```
 
 ### 3.5 - Human-in-the-loop gate
@@ -274,13 +263,12 @@ def run_improvement_cycle(task: str, backend: str | None = None) -> dict:
 The `HUMAN_IN_LOOP=true` flag inserts a confirmation step before `scripts/commit` runs. This is the single intervention that [community consensus](https://www.reddit.com/r/AI_Agents/comments/1taei9m/stop_building_ai_agents/) identifies as saving "90% of the headache."
 
 ```python
-# In evolve/loop.py, before the COMMIT block:
+# In run_improvement_cycle, immediately before the COMMIT block:
+import os
 if os.getenv("HUMAN_IN_LOOP", "true").lower() == "true":
-    print(f"\n[HUMAN-IN-LOOP] Proposed commit: skill={skill_name}, delta={delta:+.4f}")
-    print(f"Skill content preview:\n{proposal['content'][:400]}\n")
-    answer = input("Accept and commit? [y/N] ").strip().lower()
-    if answer != "y":
-        os.rename(candidate_path, f"evolve/archive/rejected/human_{candidate_hash}.py")
+    print(f"\n[HUMAN-IN-LOOP] skill={skill.name!r}  delta={verdict.delta:+.4f}")
+    print(f"Steps preview: {skill.steps[:3]}")
+    if input("Accept and commit? [y/N] ").strip().lower() != "y":
         return {"committed": False, "reason": "human rejected"}
 ```
 
@@ -456,7 +444,7 @@ Acceptance rate: 7/20 (35%)
 ```
 
 > [!tip] What good numbers look like
-> The [Darwin Gödel Machine](https://arxiv.org/abs/2505.22954) reports 20% to 50% gains on SWE-bench over many cycles - but that is an unconstrained self-rewriting system on a narrow benchmark. For a memory + skill system on general tasks, expect 5-15pp cumulative gain over 20-50 cycles before plateauing. An acceptance rate of 20-40% means the VERIFY gate is doing real work. 100% acceptance means `VERIFY_THRESHOLD` is too low. 0% means the reflection quality is poor or the tasks are too hard for the model.
+> The [Darwin Gödel Machine](https://arxiv.org/abs/2505.22954) reports 20% to 50% gains on SWE-bench over many cycles - but that is an unconstrained self-rewriting system on a narrow benchmark. For a memory + skill system on general tasks, expect 5-15pp cumulative gain over 20-50 cycles before plateauing. An acceptance rate of 20-40% means the VERIFY gate is doing real work. 100% acceptance means `EVOLVE_MIN_DELTA` is too low. 0% means the reflection quality is poor or the tasks are too hard for the model.
 
 ### 5.3 - Diagnosing a plateau
 
@@ -488,14 +476,14 @@ If improvement stalls:
 > The [SkillOS paper](https://arxiv.org/abs/2605.06614) and [Muse-Autoskill](https://arxiv.org/abs/2605.27366) both document skill proliferation as a failure mode: the library grows, retrieval degrades, and new skills conflict with old ones. Run `skills/library.py --audit` periodically to prune skills that have not been invoked in N cycles. A skill that is never retrieved is a liability, not an asset.
 
 > [!note] Self-modification is a separate regime
-> This capstone defaults to skill accumulation (camp 2 in the curriculum's taxonomy). If you want to explore prompt mutation or code rewriting (camp 1, Module 08), keep those candidates in `evolve/archive/` with a stricter threshold (e.g., `EVOLVE_THRESHOLD=0.05` vs. `VERIFY_THRESHOLD=0.02`) and always sandbox execution. The [DGM paper](https://arxiv.org/abs/2505.22954) documents what full self-rewriting can achieve, but it requires a narrow, benchmarkable problem and a hermetic sandbox.
+> This capstone defaults to skill accumulation (camp 2 in the curriculum's taxonomy). If you want to explore prompt mutation or code rewriting (camp 1, Module 08), keep those candidates in `evolve/archive/` with a stricter `EVOLVE_MIN_DELTA` (e.g., 0.10 rather than the 0.05 default) and always sandbox execution. The [DGM paper](https://arxiv.org/abs/2505.22954) documents what full self-rewriting can achieve, but it requires a narrow, benchmarkable problem and a hermetic sandbox.
 
 ---
 
 > [!question] Checkpoint
 > 1. In the full architecture diagram, what is the only decision point that can route a proposal to `scripts/commit`? Why must this step be deterministic rather than LLM-driven?
 > 2. Why does `memory/store.py` always connect to `http://localhost:8000/v1` for embeddings, even when `AGENT_BACKEND=vibeproxy`?
-> 3. You observe that the acceptance rate in your eval trend is 95% over 30 cycles. What does this suggest about your `VERIFY_THRESHOLD`, and what risk does it create?
+> 3. You observe that the acceptance rate in your eval trend is 95% over 30 cycles. What does this suggest about your `EVOLVE_MIN_DELTA`, and what risk does it create?
 > 4. A proposed skill contains `subprocess.run(...)`. According to `verification/gates.py`, what additional requirements must be satisfied before this skill can be committed?
 > 5. Your CHANGELOG shows three consecutive cycles with `delta: +0.08` for skills with names like `general_improvement_v1`, `general_improvement_v2`. What two failure modes does this pattern signal?
 
