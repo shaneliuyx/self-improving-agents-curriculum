@@ -2,7 +2,7 @@
 title: "Memory - Episodic, Semantic, Procedural"
 tags: [self-improving-agents, curriculum, memory, embeddings, retrieval]
 module: 04
-updated: 2026-05-31
+updated: 2026-06-01
 ---
 
 # 04 · Memory - Episodic, Semantic, Procedural
@@ -83,8 +83,11 @@ classDiagram
         +EpisodicStore episodic
         +SemanticStore semantic
         +ProceduralStore procedural
-        +search_all(query: str, k: int) list~MemoryItem~
-        +inject_context(query: str) str
+        +add(content, memory_type, salience) MemoryItem
+        +search(query: str, k: int) list~MemoryItem~
+        +get_recent(memory_type, k) list~MemoryItem~
+        +record_trajectory(trajectory, salience) MemoryItem
+        +inject_context(query: str, k: int) str
     }
 
     MemoryStore *-- EpisodicStore

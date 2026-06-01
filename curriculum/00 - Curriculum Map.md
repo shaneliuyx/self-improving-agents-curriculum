@@ -2,7 +2,7 @@
 title: "Curriculum Map"
 tags: [self-improving-agents, curriculum, map-of-content, moc]
 module: 00
-updated: 2026-05-31
+updated: 2026-06-01
 ---
 
 # 00 · Curriculum Map
@@ -35,6 +35,20 @@ This curriculum sits deliberately between those poles, targeting the **subscript
 - Wants genuine, measurable improvement - not just "the agent remembers things"
 
 The thesis in one sentence: **accumulate verified knowledge and reusable skills; self-modify code only in a sandboxed, benchmarkable sub-loop.**
+
+---
+
+## The Three Layers: Brain, Harness, Agent
+
+Before the camps, one framing the rest of this curriculum depends on. An agent is not just a model with a prompt. There are three layers, and conflating them is why most agent projects stall:
+
+- **The LLM is the brain.** Text in, text out. It cannot read a file, run a test, wait 5 seconds, or remember the last session. The smartest brain on a table does nothing on its own.
+- **The agent *harness* is the body and nervous system.** It gives the brain meta-abilities: assembling the right context each turn, defining and dispatching tools, running code in a sandbox, storing state and memory, deciding when to continue/stop/reflect, retrying failed API calls, logging every step for replay, blocking dangerous operations. A production harness is at least ten distinct subsystems (enumerated as a checklist in [[11 - Capstone - Production Agent]] §4.0).
+- **The agent is a trained professional.** Brain + body + domain knowledge, tools, and success criteria for one job. A sales agent and a coding agent can share the same LLM and the same harness, yet be completely different products - the difference is the profession, not the brain.
+
+The load-bearing claim, now a 2026 community consensus, is that **the harness matters as much as the model**: the same Claude that feels like a senior engineer inside Claude Code feels like a confused intern in a hand-rolled demo - because Claude Code's harness assembles context per request, applies structured diffs with rollback, feeds test/compile failures back into the next turn, and routes work across models. None of that is model capability; all of it is harness engineering. ([Anthropic's agent-harness masterclass](https://www.youtube.com/watch?v=efRIrLXoOVA), 49K views: *"the harness matters as much as the model"*; [O'Reilly, "Agent Harness Engineering"](https://www.oreilly.com/radar/agent-harness-engineering/).)
+
+This curriculum teaches you to **build** the harness from primitives so you understand the layer - then, in [[13 - Graduating to a Framework]], when to **stop hand-rolling it** and adopt a platform ([deepagents](https://github.com/langchain-ai/deepagents), [OpenHarness](https://github.com/HKUDS/OpenHarness)) instead. A *teaching* lab is the one place hand-rolling is correct; a *business* shipping an agent is usually not.
 
 ---
 
@@ -199,6 +213,7 @@ flowchart TD
 | 11 | [[11 - Capstone - Production Agent]] | Assemble all layers into a monitored, versioned production agent |
 | 12 | [[12 - Resources and Field Map]] | Papers, repos, community links, what to read next |
 | 13 | [[13 - Graduating to a Framework]] | Optional: when and how to adopt mem0, Pydantic AI, or the Claude Agent SDK on our backends |
+| 14 | [[14 - Framework Capstone - Shipping on deepagents]] | Optional: the buy-path capstone - ship a real self-improving code-fix agent on deepagents, backend-swappable to oMLX/VibeProxy |
 
 ---
 

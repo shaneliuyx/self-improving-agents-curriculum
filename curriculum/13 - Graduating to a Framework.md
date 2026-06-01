@@ -2,7 +2,7 @@
 title: "Graduating to a Framework"
 tags: [self-improving-agents, curriculum, frameworks, mem0, pydantic-ai]
 module: 13
-updated: 2026-05-31
+updated: 2026-06-01
 ---
 
 # 13 · Graduating to a Framework
@@ -192,4 +192,4 @@ async for message in query(prompt="What is 17 * 23?", options=options):
 
 ## Navigation
 
-← [[12 - Resources and Field Map]] · [[00 - Curriculum Map]] (home) · [[11 - Capstone - Production Agent]] (back to capstone)
+← [[12 - Resources and Field Map]] · [[00 - Curriculum Map]] (home) · [[11 - Capstone - Production Agent]] (back to capstone) · [[14 - Framework Capstone - Shipping on deepagents]] (the hands-on build →)

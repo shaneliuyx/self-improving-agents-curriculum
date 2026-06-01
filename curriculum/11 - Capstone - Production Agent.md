@@ -2,7 +2,7 @@
 title: "Capstone - A Production Self-Improving Agent"
 tags: [self-improving-agents, curriculum, capstone, production, architecture]
 module: 11
-updated: 2026-05-31
+updated: 2026-06-01
 ---
 
 # 11 · Capstone - A Production Self-Improving Agent
@@ -290,6 +290,27 @@ if os.getenv("HUMAN_IN_LOOP", "true").lower() == "true":
 
 This checklist is the skeptic's 4-question framework applied to self-improving agents, extended with operational concerns.
 
+### 4.0 - Harness Completeness Checklist
+
+Per the brain/harness/agent framing in [[00 - Curriculum Map]], a production harness is ~10 distinct subsystems. This table is the audit: which does this lab implement, which does it teach, and which are deliberately out of scope for a single-operator learning scaffold. Use it to know exactly what you would still need before shipping an agent to a business - and what to rent from a platform rather than hand-roll (see [[13 - Graduating to a Framework]]).
+
+| # | Harness subsystem | Lab status | Where |
+|---|---|---|---|
+| 1 | Model client (retry/backoff, timeout, cost accounting) | Partial | `backends/adapter.py` - retry/timeout taught in [[02 - Backends - oMLX and VibeProxy]] |
+| 2 | Model routing (light for intent, strong for reasoning) | Partial | `backends/router.py` - `route()`/`RouteDecision`, wired at 4 callsites |
+| 3 | Context assembly + compression (per-request budget, not whole-project dump) | Partial | `agent/loop.py` `_build_system_prompt` + memory retrieval; see [[03 - The Minimal Agent Loop]], [[04 - Memory Systems]] |
+| 4 | Tool system (define, dispatch, fail-as-observation) | Full | `agent/tools.py` `TOOL_SCHEMAS`/`dispatch_tool` |
+| 5 | Structured edit / diff-apply with rollback | GAP - exercise | covered by the `apply_patch` tool work; contrast full-file overwrite in [[03 - The Minimal Agent Loop]] |
+| 6 | Execution environment / sandbox isolation | Partial (taught, worktree-runner build) | [[09 - Sandboxing and Safe Execution]] |
+| 7 | State, memory, checkpoint/rollback | Full (memory) / Partial (checkpoint) | `memory/store.py`; `scripts/commit`; [[04 - Memory Systems]], [[08 - Self-Modification - The DGM Pattern]] |
+| 8 | Scheduling loop (continue / stop / when-to-reflect) | Full (continue-stop) / Partial (adaptive reflect) | `agent/loop.py`, `scripts/go` |
+| 9 | Identity + permissions (capability scoping; caller-principal) | Partial (capability scoping) / Out-of-scope (multi-tenant) | `verification/gates.py`, `agent/tools.py` write-allowlist; multi-user is a production concern the lab omits |
+| 10 | Observability (log-every-step, replay, debug) | Partial | JSONL run log + `agent/replay.py` |
+| 11 | Security (block dangerous ops, prompt-injection defense) | Partial | `verification/gates.py` denylist + tool-output quarantine |
+| 12 | API layer + deployment | Out-of-scope | CLI/library only; intentionally omitted for a local learning scaffold |
+
+"GAP - exercise" and "Out-of-scope" are honest labels, not apologies: the lab's job is to teach each primitive well enough that you recognize a production-grade implementation when you rent one. Items 9 (multi-tenant), 12 (deploy), and concurrent tool execution are general-production-harness concerns - acknowledge them, then reach for a platform.
+
 ### 4.1 - The skeptic's 4 questions (apply before each feature)
 
 Drawn from [community hard-won experience](https://www.reddit.com/r/AI_Agents/comments/1taei9m/stop_building_ai_agents/):
@@ -455,4 +476,4 @@ If improvement stalls:
 
 ## Navigation
 
-← [[10 - Evaluation Harness]] · [[00 - Curriculum Map]] (home) · [[12 - Resources and Field Map]] →
+← [[10 - Evaluation Harness]] · [[00 - Curriculum Map]] (home) · [[12 - Resources and Field Map]] → · [[14 - Framework Capstone - Shipping on deepagents]] (the buy counterpart)

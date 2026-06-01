@@ -3,6 +3,16 @@
 All notable changes to the curriculum and scaffold. The `/improve-curriculum` command
 appends a dated entry here each time it refreshes the material from new sources.
 
+## 2026-06-01 — Harness layer named + framework-capstone added (notes)
+
+Motivated by the "agent harness" thesis (North@CreaoAI; [Anthropic masterclass](https://www.youtube.com/watch?v=efRIrLXoOVA) "the harness matters as much as the model"; [O'Reilly](https://www.oreilly.com/radar/agent-harness-engineering/)) and a full gap-analysis of the lab/curriculum against that checklist.
+
+- **Note 00:** new "Three Layers: Brain / Harness / Agent" framing block - names the harness as a first-class layer and states the build-then-graduate arc.
+- **Note 11:** new §4.0 "Harness Completeness Checklist" - 12-row audit mapping each harness subsystem to the lab file that implements it, or an honest "GAP - exercise" / "Out-of-scope" label.
+- **Note 14 (NEW):** "Framework Capstone - Shipping on deepagents" - build a real self-improving code-fix agent on [deepagents](https://github.com/langchain-ai/deepagents) (24K stars), backend-swappable to oMLX/VibeProxy via a verified `ChatOpenAI(base_url=...)` swap. Primitive→framework mapping table; the external eval gate stays yours (never let the framework self-approve). Closes the build→buy arc opposite [[11]].
+- **Drift fixes (notes now match the shipped lab API):** note 02 router (`get_model/TIER_*` → `route()/RouteDecision`), note 04 memory class-diagram (`search_all` → `add/search/get_recent`), note 10 eval runner (single-shot completion → drives the real `run_agent`).
+- Code stages that turn the checklist's "GAP" rows into "implemented" (memory-retrieval, routing, write→verify→recover, resilience, containment) are tracked separately and land as scaffold changes, not in this notes-only commit.
+
 ## 2026-06-01 — Refresh from last-30-days sources (SkillOpt, SAMULE)
 
 - **Note 06 (Skill Acquisition):** added [SkillOpt](https://arxiv.org/abs/2605.23904) (Microsoft,

@@ -2,7 +2,7 @@
 title: "Backends - Local oMLX and Claude MAX via VibeProxy"
 tags: [self-improving-agents, curriculum, backends, local-inference, omlx, vibeproxy]
 module: 02
-updated: 2026-05-31
+updated: 2026-06-01
 ---
 
 # 02 · Backends - Local oMLX and Claude MAX via VibeProxy
@@ -261,44 +261,43 @@ The community reality check from [Reddit r/AI_Agents](https://www.reddit.com/r/A
 
 Even within a single backend, routing tasks to appropriately-sized models reduces latency and rate-limit pressure. This pattern scales up significantly when working with multiple backends - see [[08 - Self-Modification - The DGM Pattern]] for how routing decisions can themselves be self-improved.
 
-The basic routing pattern in `backends/router.py`:
+The routing pattern in `backends/router.py` exposes a single `route()` function that maps a step's *difficulty* to a `RouteDecision` (which backend + which model + why):
 
 ```python
-# backends/router.py
+# backends/router.py (shipped API)
 import os
-from backends.adapter import make_client
+from dataclasses import dataclass
 
-# Task complexity tiers
-TIER_CHEAP = "cheap"   # classification, extraction, short summarization
-TIER_HARD  = "hard"    # reasoning, code generation, multi-step planning
+@dataclass
+class RouteDecision:
+    backend: str       # "omlx" | "vibeproxy"
+    model: str         # concrete model id to pass to chat(..., model=)
+    rationale: str
 
-ROUTING = {
-    "omlx": {
-        TIER_CHEAP: os.getenv("OMLX_CHEAP_MODEL", "qwen2.5-coder-1.5b"),
-        TIER_HARD:  os.getenv("OMLX_MODEL",        "qwen2.5-coder-7b"),
-    },
-    "vibeproxy": {
-        TIER_CHEAP: os.getenv("VIBE_CHEAP_MODEL", "claude-haiku-4-5"),
-        TIER_HARD:  os.getenv("VIBE_MODEL",       "claude-sonnet-4-5-20250929"),
-    },
-}
+# Small vs large per backend. Give these DISTINCT values in .env or routing is a no-op:
+#   OMLX_SMALL_MODEL=qwen2.5-coder-3b-instruct-4bit   OMLX_LARGE_MODEL=qwen2.5-coder-7b
+_OMLX_SMALL = os.getenv("OMLX_SMALL_MODEL", os.getenv("OMLX_MODEL", "qwen2.5-coder-7b"))
+_OMLX_LARGE = os.getenv("OMLX_LARGE_MODEL", os.getenv("OMLX_MODEL", "qwen2.5-coder-7b"))
 
-def get_model(tier: str, backend: str | None = None) -> tuple:
-    b = backend or os.getenv("AGENT_BACKEND", "omlx")
-    client, _ = make_client(b)
-    model = ROUTING[b][tier]
-    return client, model
+def route(step_difficulty: str) -> RouteDecision:
+    """Map 'trivial'|'easy'|'medium'|'hard' to a backend+model choice."""
+    # ... returns RouteDecision(backend=..., model=_OMLX_SMALL or _OMLX_LARGE, rationale=...)
 ```
 
-Practical routing heuristics:
+Callers then pass the chosen model through: `chat(prompt, system=..., backend=d.backend, model=d.model)` - `chat()` accepts a `model=` override, so the routed model size actually takes effect.
 
-| Task | Tier | Rationale |
+> [!warning] Distinct small/large models or routing is a no-op
+> `_OMLX_SMALL` and `_OMLX_LARGE` both fall back to `OMLX_MODEL` when `OMLX_SMALL_MODEL` / `OMLX_LARGE_MODEL` are unset. If your `.env` sets only `OMLX_MODEL`, every tier resolves to the same model and routing does nothing. Set distinct small/large model ids to see the effect.
+
+Practical routing heuristics (the `difficulty` a step maps to):
+
+| Task | difficulty | Rationale |
 |---|---|---|
-| Extract JSON fields from a response | cheap | Deterministic pattern, small context |
-| Classify whether a result is correct | cheap | Binary judgment, short prompt |
+| Extract JSON fields from a response | trivial/easy | Deterministic pattern, small context |
+| Classify whether a result is correct | easy | Binary judgment, short prompt |
 | Generate a new agent skill from scratch | hard | Requires creativity + correctness |
 | Debug a failing tool call | hard | Multi-step reasoning over stack traces |
-| Summarize a long CHANGELOG entry | cheap | Compression, not reasoning |
+| Summarize a long CHANGELOG entry | easy | Compression, not reasoning |
 | Evaluate two approaches and choose one | hard | Comparative judgment with nuance |
 
 > [!tip] Lite-Harness Approach
@@ -355,19 +354,14 @@ def test_embeddings():
     print("  PASS")
 
 def test_model_routing():
-    from backends.router import get_model, TIER_CHEAP, TIER_HARD
-    backend = os.getenv("AGENT_BACKEND", "omlx")
-    print(f"\n[Routing] backend={backend}")
-    for tier in (TIER_CHEAP, TIER_HARD):
-        client, model = get_model(tier)
-        resp = client.chat.completions.create(
-            model=model,
-            messages=[{"role": "user", "content": f"tier={tier}: say OK"}],
-            max_tokens=10,
-            temperature=0.0,
-        )
-        text = resp.choices[0].message.content.strip()
-        print(f"  {tier:6s} -> model={model}  reply={text!r}")
+    from backends.router import route
+    from backends.adapter import chat
+    print(f"\n[Routing] backend={os.getenv('AGENT_BACKEND', 'omlx')}")
+    for difficulty in ("easy", "hard"):
+        d = route(difficulty)
+        reply = chat([{"role": "user", "content": f"difficulty={difficulty}: say OK"}],
+                     backend=d.backend, model=d.model, max_tokens=10)
+        print(f"  {difficulty:5s} -> backend={d.backend} model={d.model}  reply={reply.strip()!r}")
     print("  PASS")
 
 if __name__ == "__main__":

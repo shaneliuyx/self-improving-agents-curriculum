@@ -2,7 +2,7 @@
 title: "Evaluation Harness and Measuring Improvement"
 tags: [self-improving-agents, curriculum, evaluation, benchmarking, regression-testing]
 module: 10
-updated: 2026-05-31
+updated: 2026-06-01
 ---
 
 # 10 · Evaluation Harness and Measuring Improvement
@@ -426,26 +426,22 @@ class EvalReport:
     budget_calls: int
     results: list[TaskResult]
 
-def run_task(task: Task, client, model: str, variant_system: str | None) -> TaskResult:
-    system = variant_system or "You are a helpful assistant. Answer concisely and correctly."
+def run_task(task: Task, variant_system: str | None = None) -> TaskResult:
+    # IMPORTANT: drive the REAL agent loop (run_agent), not a bare
+    # chat.completions call. A single-shot completion measures the MODEL;
+    # the eval must measure the AGENT - tools, loop, recovery - or it cannot
+    # catch harness regressions. run_agent honors task.difficulty for routing.
+    from agent.loop import run_agent
     t0 = time.perf_counter()
     try:
-        resp = client.chat.completions.create(
-            model=model,
-            messages=[
-                {"role": "system", "content": system},
-                {"role": "user", "content": task.input},
-            ],
-            max_tokens=512,
-            temperature=0.0,
-        )
-        output = resp.choices[0].message.content or ""
+        result = run_agent(task.input, system_override=variant_system,
+                           difficulty=task.difficulty)
+        output = result.answer or ""
         latency = time.perf_counter() - t0
-        passed = task.checker(output)
         return TaskResult(
             id=task.id,
             category=task.category,
-            passed=passed,
+            passed=task.checker(output),
             latency_s=round(latency, 3),
             output_preview=output[:120].replace("\n", " "),
         )
