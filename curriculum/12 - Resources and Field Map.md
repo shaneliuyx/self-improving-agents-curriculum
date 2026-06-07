@@ -2,7 +2,7 @@
 title: "Resources, Papers, and the Field Map"
 tags: [self-improving-agents, curriculum, bibliography, glossary, field-map]
 module: 12
-updated: 2026-05-31
+updated: 2026-06-08
 ---
 
 # 12 · Resources, Papers, and the Field Map
@@ -36,6 +36,9 @@ updated: 2026-05-31
 | [Experiential Reflective Learning (ERL)](https://arxiv.org/pdf/2603.24639) | Grounds the REFLECT step: agents store experience traces, extract lessons, and inject them as few-shot context. Directly motivates the ACT → RECORD → REFLECT → LEARN loop. | [[05 - Reflection and Self-Correction]] |
 | [Position: Truly Self-Improving Agents Require Intrinsic Metacognitive Learning](https://openreview.net/forum?id=4KhDd0Ozqe) | A position paper arguing that external reward signals are insufficient - agents need to model their own uncertainty and learning progress. Useful as a counter-argument and a long-term north star. | [[01 - What Self-Improving Means]], [[05 - Reflection and Self-Correction]] |
 | [MemEvolve / EvolveLab](https://arxiv.org/pdf/2512.18746) | Meta-evolution of agent memory: the memory format itself is searched and improved, not just its contents. Motivates treating your memory schema as a first-class artifact. | [[04 - Memory Systems]], [[08 - Self-Modification - The DGM Pattern]] |
+| [HyperAgents](https://arxiv.org/pdf/2603.19461) | Meta FAIR. The meta-agent rewrites its own code, so the mechanism that generates improvements is itself improved ("metacognitive self-modification"); extends self-improvement beyond coding. The next rung above DGM. | [[08 - Self-Modification - The DGM Pattern]] |
+| [Meta-Harness](https://arxiv.org/html/2603.28052v1) | Stanford IRIS Lab / MIT / KRAFTON. An agent optimizes the harness around a frozen model; 76.4% on Terminal-Bench 2.0 (Opus 4.6), beating hand-engineered harnesses with no weight updates. Proves harness choices alone can swing results up to 6x. | [[10 - Evaluation Harness]], [[03 - The Minimal Agent Loop]] |
+| [Agent Harness Engineering: A Survey](https://openreview.net/pdf?id=eONq7FdiHa) | Names and maps the "harness engineering" discipline: tools, patterns, evals, memory, permissions, observability, orchestration. The taxonomy for the whole curriculum's harness layer. | [[03 - The Minimal Agent Loop]], [[10 - Evaluation Harness]] |
 
 ### Projects and Tools
 
@@ -53,6 +56,8 @@ updated: 2026-05-31
 | [Strands - AWS](https://aws.amazon.com/blogs/devops/building-self-extending-cli-tools-with-aws-strands/) | Shows self-extending CLIs via tool registration at runtime. Camp 2 applied to CLI tooling, with a production deployment story. | [[06 - Skill Acquisition and Curation]], [[11 - Capstone - Production Agent]] |
 | [Arize - Context Graph](https://arize.com/blog/self-improving-agent-with-context-graph/) | Self-improving agent driven by a graph of human disagreement signals. Treats human feedback as structured data, not free text. | [[05 - Reflection and Self-Correction]], [[07 - Verification Gates and Layered Control]] |
 | [Claude Managed Agents](https://claude.com/blog/claude-managed-agents-updates) | Anthropic's production stance: self-hosted sandboxes + MCP tunnels. Authoritative signal on where the platform is heading. | [[09 - Sandboxing and Safe Execution]] |
+| [awesome-harness-engineering](https://github.com/ai-boost/awesome-harness-engineering) | Curated list of harness-engineering tools, patterns, evals, memory, permissions, observability, and orchestration. The fastest way to scan the field's tooling. | [[03 - The Minimal Agent Loop]], [[10 - Evaluation Harness]] |
+| [OpenAI - Harness engineering with Codex](https://openai.com/index/harness-engineering/) | A production account of running an agent-first codebase (~1M LOC, ~1,500 PRs, small team). "Humans steer. Agents execute." Defines the mindset shift the curriculum trains for. See also the [Codex App Server deep-dive](https://openai.com/index/unlocking-the-codex-harness/). | [[03 - The Minimal Agent Loop]], [[11 - Capstone - Production Agent]] |
 
 ### Community Findings
 
@@ -61,6 +66,7 @@ updated: 2026-05-31
 | [NousResearch hermes-agent issue #29652 - rule priority hierarchy](https://github.com/NousResearch/hermes-agent/issues/29652) | Production verdict: Layer 1 (Prompt) alone failed - agents skipped instructions. Teams moved deterministic steps to L2 scripts. This finding directly shapes the L0/L1/L2/L3 hierarchy taught in the verification module. | [[07 - Verification Gates and Layered Control]], [[11 - Capstone - Production Agent]] |
 | [Reddit r/AI_Agents - Stop building AI agents](https://www.reddit.com/r/AI_Agents/comments/1taei9m/stop_building_ai_agents/) | 1,447 upvotes. Decision framework: can you draw it as clear steps? Use automation. More than 5 branches with unpredictable inputs? Maybe agent. High cost of worst-case wrong answer? Automation. Compliance review? Automation, full stop. | [[01 - What Self-Improving Means]], [[07 - Verification Gates and Layered Control]] |
 | ["What 1k Harness Experiments Taught Me" (henrypan)](https://www.henrypan.com/blog/2026-05-25-self-improvement-harness/) | The most data-dense practitioner post in the curriculum. Covers what actually breaks in harness loops at scale: prompt drift, skill rot, verification overfitting, and rate-limit cliffs. | [[10 - Evaluation Harness]], [[05 - Reflection and Self-Correction]] |
+| [AI agents hit a self-improvement wall after one pass](https://aiweekly.co/alerts/ai-agents-hit-self-improvement-wall-after-one-pass) | Across 1,000+ experiments, agents made one structural harness improvement but failed to compound it - a missing self-model, not model size, was the ceiling. The empirical caveat behind this curriculum's "narrow + verify, don't expect a self-sustaining ratchet" stance. | [[08 - Self-Modification - The DGM Pattern]], [[10 - Evaluation Harness]] |
 
 ---
 

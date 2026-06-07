@@ -2,7 +2,7 @@
 title: "Evaluation Harness and Measuring Improvement"
 tags: [self-improving-agents, curriculum, evaluation, benchmarking, regression-testing]
 module: 10
-updated: 2026-06-01
+updated: 2026-06-08
 ---
 
 # 10 · Evaluation Harness and Measuring Improvement
@@ -36,6 +36,9 @@ The canonical loop is **ACT -> RECORD -> REFLECT -> LEARN**, and LEARN is gated 
 [Continual Harness](https://arxiv.org/abs/2605.09998) frames this precisely: self-improving foundation agents require *online adaptation* that is continuously grounded in external task performance signals. The harness is that grounding signal.
 
 [Darwin Gödel Machine](https://arxiv.org/abs/2505.22954) makes this concrete - the DGM ran every self-rewrite candidate through a full benchmark suite before accepting it. The 20% to 50% SWE-bench improvement only became verifiable because the harness ran before and after each mutation.
+
+> [!example] Meta-Harness - let an agent optimize the harness, gated by a benchmark
+> [Meta-Harness](https://arxiv.org/html/2603.28052v1) (Stanford IRIS Lab / MIT / KRAFTON; [artifact](https://github.com/stanford-iris-lab/meta-harness-tbench2-artifact)) is the eval-gated version of this idea applied to the harness *itself*: an agent searches over the scaffolding **around** a frozen model - what to retrieve, how to format it, when to summarize, what state to discard - and keeps only variants that score higher on Terminal-Bench 2.0. The discovered harness hits **76.4%** with Claude Opus 4.6, beating the hand-engineered Terminus-KIRA (74.7%), and **37.6%** on Haiku 4.5 (beating Goose's 35.5%) - all with **no weight updates**. The headline lesson for this module: the same model on the same benchmark can swing by up to **6x** purely from harness choices, so your eval harness is what makes harness optimization safe rather than recursive drift.
 
 > [!warning] Self-Feedback Drift
 > If the only checker is the agent itself ("did that feel right?"), the agent will gradually drift toward outputs it rates highly - not outputs that are *correct*. This is analogous to reward hacking. The fix: checkers must be **independent** of the agent being evaluated. Use deterministic string/regex checks, AST-based code correctness tests, separate "judge" LLM calls with different system prompts, or ground-truth lookup.

@@ -2,7 +2,7 @@
 title: "Reflection and Self-Correction"
 tags: [self-improving-agents, curriculum, reflection, self-correction, metacognition]
 module: 05
-updated: 2026-06-01
+updated: 2026-06-08
 ---
 
 # 05 · Reflection and Self-Correction
@@ -111,6 +111,11 @@ This is the REFLECT step proper. It runs *after* the run terminates and produces
 > - **Module 10** [[10 - Evaluation Harness]] - benchmark suites that catch performance regression over time
 >
 > Never let a reflection run write to memory without at least one of these signals present.
+
+> [!note] Principle-Level vs. Instance-Level Experience (June 2026)
+> [Rethinking Continual Experience Internalization for Self-Evolving LLM Agents](https://arxiv.org/abs/2606.04703) (June 2026) finds that under multi-iteration experience learning, existing methods cause **progressive capability collapse** rather than compounding improvement. The root cause is the granularity of what gets stored: **principle-level experience** (generalised rules distilled from multiple episodes) is significantly more durable than **instance-level experience** (raw traces of specific runs). The paper further shows that **step-wise injection** - inserting the relevant lesson at the step where it applies - substantially outperforms global batch injection, where all lessons are prepended to the system prompt at once.
+>
+> This maps directly onto the curriculum recommendation: store distilled heuristics (principle-level) in the semantic memory store rather than raw trajectories (instance-level), and inject them at the relevant reasoning step rather than loading everything into the top of the system prompt.
 
 ---
 

@@ -2,7 +2,7 @@
 title: "Self-Modification - The DGM Pattern (Safely)"
 tags: [self-improving-agents, curriculum, self-modification, dgm, evolution, evaluation]
 module: 08
-updated: 2026-05-31
+updated: 2026-06-08
 ---
 
 # 08 · Self-Modification - The DGM Pattern (Safely)
@@ -51,7 +51,10 @@ In the original DGM paper, the agent rewrites Python tool code. For subscription
 | Router rules | Adjust which tasks go to which model |
 
 > [!note] SIA vs DGM
-> [SIA (Self Improving AI)](https://arxiv.org/abs/2605.27276) from [hexo-ai](https://github.com/hexo-ai/sia) adds weight updates on top of the DGM loop - fine-tuning the model on trajectories that passed the eval gate. This is the "more aggressive" variant. For subscription/local builders: **skip weight updates, apply DGM at the harness/prompt layer only**. The [Continual Harness](https://arxiv.org/abs/2605.09998) paper formalizes this as "online adaptation" without retraining.
+> [SIA (Self Improving AI)](https://arxiv.org/abs/2605.27276) from [hexo-ai](https://github.com/hexo-ai/sia) adds weight updates on top of the DGM loop - fine-tuning the model on trajectories that passed the eval gate. This is the "more aggressive" variant. For subscription/local builders: **skip weight updates, apply DGM at the harness/prompt layer only**. The [Continual Harness](https://arxiv.org/abs/2605.09998) paper formalizes this as "online adaptation" without retraining. A live proposal to wire SIA into a self-evolving agent as a harness-evolution skill is tracked in [hermes-agent-self-evolution #99](https://github.com/NousResearch/hermes-agent-self-evolution/issues/99).
+
+> [!note] HyperAgents - the meta-agent rewrites its own harness
+> [HyperAgents](https://arxiv.org/pdf/2603.19461) (Meta FAIR) pushes the DGM idea up one level: the meta-agent rewrites *its own code*, so the mechanism that **generates** improvements is itself subject to improvement - the paper calls this *metacognitive self-modification*. It also extends self-improvement past coding into non-coding tasks ([VentureBeat coverage](https://venturebeat.com/orchestration/meta-researchers-introduce-hyperagents-to-unlock-self-improving-ai-for-non-coding-tasks)). Same caution applies, only harder: a meta-agent that edits its own improvement loop needs an even stronger external VERIFY gate, because a single bad meta-mutation can corrupt every downstream mutation.
 
 ---
 
@@ -110,6 +113,9 @@ This matches the [Autodidact](https://github.com/BuffaloTechRider/Autodidact) lo
 ## 5. Why Narrow and Benchmarkable
 
 Self-modification without a reliable eval gate is recursive drift - the agent "improves" on a proxy metric while degrading on real tasks. The DGM paper's result (20% -> 50% on SWE-bench) holds because SWE-bench is a fixed, external benchmark that cannot be gamed by prompt changes.
+
+> [!warning] The compounding ceiling - self-improvement often stalls at iteration one
+> A 2026 study of [1,000+ harness experiments](https://aiweekly.co/alerts/ai-agents-hit-self-improvement-wall-after-one-pass) found agents reliably propose **one** structural harness improvement but then fail to **compound** it across later iterations. The plateau is attributed not to model size but to a missing **self-model** - the agent has no internal account of *why* the first change worked, so it cannot build on it. This puts a concrete ceiling on the "self-improvement compounds with capability" assumption, at iteration one. Practical takeaway for this module: do not assume your keep/discard loop will keep climbing on its own. Expect a fast first gain, then diminishing returns - and treat each accepted mutation as a deliberate, separately-verified step, not a self-sustaining ratchet.
 
 For your own agent, the rule is: **only attempt DGM-style self-modification on sub-problems where you can write a real eval set in under an hour**. Good candidates:
 

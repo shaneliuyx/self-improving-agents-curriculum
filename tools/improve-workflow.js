@@ -18,9 +18,9 @@ export const meta = {
   ],
 }
 
-const VAULT = '/Users/yuxinliu/第二大脑/Self-Improving Agents'
+const VAULT = '/Users/yuxinliu/Documents/Obsidian Vault/Self-Improving Agents'
 const LAB = '/Users/yuxinliu/self-improving-agent-lab'
-const SPEC = '/Users/yuxinliu/self-improving-agents-curriculum/tools/curriculum-spec.md'
+const SPEC = '/Users/yuxinliu/code/self-improving-agents-curriculum/tools/curriculum-spec.md'
 const researchPath = (args && args.researchPath) || ''
 const focus = (args && args.focus) || ''
 
@@ -33,6 +33,7 @@ const NOTES = [
   '10 - Evaluation Harness', '11 - Capstone - Production Agent',
   '12 - Resources and Field Map',
   '13 - Graduating to a Framework',
+  '14 - Framework Capstone - Shipping on deepagents',
 ]
 
 const CHANGE_LIST = {
@@ -71,7 +72,7 @@ const analysis = await agent(
   `You are the REFLECT/gap-analysis step for the Self-Improving Agents curriculum.
 1. Read the authoring spec IN FULL: Read ${SPEC}
 2. Read the fresh research: ${researchPath ? `Read ${researchPath}` : 'No researchPath provided - run `bash /Users/yuxinliu/self-improving-agents-curriculum/tools/refresh-research.sh "' + focus + '"` then read the newest *-raw-refresh.md in ~/.claude/plugins/data/last30days-last30days-skill/research'}
-3. Read the current 14 notes under "${VAULT}" (basenames listed below). ${focus ? `Extra focus: ${focus}.` : ''}
+3. Read the current 15 notes under "${VAULT}" (basenames listed below). ${focus ? `Extra focus: ${focus}.` : ''}
 4. Produce a CHANGE LIST: only ADDITIVE, HIGH-SIGNAL, SOURCED updates (new paper/tool/finding worth a citation,
    a new diagram, a correction). Map every change to a REAL url from the research. Skip what's already covered.
    Do NOT propose churn or rewrites of working content. It is valid to return an empty changes array if nothing
@@ -94,7 +95,7 @@ if (changes.length) {
       `Apply these ADDITIVE, SOURCED updates to the Obsidian note "${VAULT}/${file}.md".
 Read ${SPEC} for house style (frontmatter, [[wikilinks]], valid \`\`\`mermaid + caption, inline [name](url)
 citations from REAL sources only, " - " not em-dashes, Navigation footer). Read the note, then use Edit to
-weave in the changes - do not rewrite working sections. Bump the frontmatter "updated:" to 2026-05-31.
+weave in the changes - do not rewrite working sections. Bump the frontmatter "updated:" to 2026-06-08.
 Changes to apply (each has backing sources - cite them inline):
 ${cs.map((c, i) => `${i + 1}. ${c.instruction}  [sources: ${c.sources.join(', ')}]`).join('\n')}
 Return the manifest.`,
@@ -119,7 +120,7 @@ const AUDIT = {
 }
 const audit = await agent(
   `Audit the curriculum after updates. Valid note basenames: ${NOTES.join(' | ')}.
-1. Grep every [[wikilink]] across the 14 notes in "${VAULT}"; any target not in the valid set (ignore #headings/externals) -> broken_wikilinks ("file: [[bad]]").
+1. Grep every [[wikilink]] across the 15 notes in "${VAULT}"; any target not in the valid set (ignore #headings/externals) -> broken_wikilinks ("file: [[bad]]").
 2. Every \`\`\`mermaid fence must be balanced and start with a valid diagram keyword -> else bad_mermaid.
 3. Inline link URLs must appear in ${SPEC} OR in ${researchPath || 'the latest research file'} -> else suspicious_urls ("file: url"). Allow localhost/obsidian-internal.
 4. Run: cd ${LAB} && find . -name '*.py' -print0 | xargs -0 python3 -m py_compile ; set py_compile_ok = (exit 0).

@@ -2,7 +2,7 @@
 title: "The Minimal Agent Loop (Baseline)"
 tags: [self-improving-agents, curriculum, react-loop, tool-use, trajectory]
 module: 03
-updated: 2026-05-31
+updated: 2026-06-08
 ---
 
 # 03 · The Minimal Agent Loop (Baseline)
@@ -50,6 +50,9 @@ The minimal loop has four elements:
 | **Trajectory** | The full list of messages (user, assistant, tool_result) from start to finish | `agent/loop.py` |
 
 The trajectory is the most important data structure in the curriculum. It is the raw material for RECORD ([[04 - Memory Systems]]), the input to REFLECT ([[05 - Reflection and Self-Correction]]), and the unit of measurement for VERIFY ([[10 - Evaluation Harness]]).
+
+> [!note] The loop you are building IS the harness
+> These four elements - prompt, tool schema, dispatcher, trajectory - are collectively the agent's **harness**: the code *around* the model. In 2026 this became a named discipline, "harness engineering," framed as the third phase after prompt engineering and context engineering ([O'Reilly Radar](https://www.oreilly.com/radar/agent-harness-engineering/)). [OpenAI's account of building Codex agent-first](https://openai.com/index/harness-engineering/) captures the mindset shift: "Humans steer. Agents execute," and "give the agent a map, not a 1,000-page instruction manual." Why it matters for a *self-improving* agent: most of the surface a subscription/local builder can actually change to get better is the harness (the model weights are frozen), and harness choices alone can swing benchmark performance by multiples (see [[10 - Evaluation Harness]]). Everything you self-modify in [[08 - Self-Modification - The DGM Pattern]] lives in this harness.
 
 ---
 

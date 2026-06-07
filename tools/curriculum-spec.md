@@ -180,3 +180,4 @@ When a note has a hands-on lab, reference the relevant scaffold file by path and
 11 - Capstone - Production Agent
 12 - Resources and Field Map
 13 - Graduating to a Framework
+14 - Framework Capstone - Shipping on deepagents
