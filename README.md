@@ -34,6 +34,34 @@ are always local** (VibeProxy has no embeddings endpoint).
 
 ---
 
+## What makes this different
+
+There are good free courses for *building* an agent (Microsoft's
+[ai-agents-for-beginners](https://github.com/microsoft/ai-agents-for-beginners), several
+solid from-scratch repos). What this curriculum does that they don't:
+
+- **Self-improvement is the whole spine, not a footnote.** Every module serves one loop -
+  ACT → RECORD → REFLECT → LEARN, gated by VERIFY - across the three camps (code/weight
+  self-modification, memory+skill accumulation, and the skeptic's "you probably want an
+  automation"). You build the DGM-style keep/discard evolve loop and a label-free
+  retrospective-optimization (RHO) loop yourself, not read about them.
+- **Local-first *and* subscription-first, with no paid API.** One adapter targets a local
+  model (oMLX) or your Claude subscription (via VibeProxy) by swapping a single env var.
+  Most "from scratch" courses assume a metered OpenAI/Azure key; the local-only ones stop
+  at memory/ReAct.
+- **Rate-limited economics, not per-token.** Because these backends are rate-limited rather
+  than billed per token, the many-call loops (reflection, critique, keep/discard, N-sample
+  self-preference voting) that are expensive on a metered API are essentially free here -
+  which changes what designs are practical.
+- **VERIFY-gate-as-thesis.** Recursive drift (an agent that "improves" itself into confident
+  nonsense) is the failure mode the whole curriculum is built to prevent - external
+  evaluation gates every LEARN step, end to end.
+- **A curriculum that refreshes itself.** The `/improve-curriculum` command mines the last
+  30 days of research (arXiv, GitHub, HN) and updates the notes + scaffold, so citations
+  don't rot. (This repo is itself maintained that way.)
+
+---
+
 ## Repository layout
 
 | Path | What |
