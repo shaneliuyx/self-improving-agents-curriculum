@@ -65,6 +65,8 @@ PAPERS / RESEARCH
 - Experiential Reflective Learning (ERL): https://arxiv.org/pdf/2603.24639
 - Position: Truly Self-Improving Agents Require Intrinsic Metacognitive Learning: https://openreview.net/forum?id=4KhDd0Ozqe
 - MemEvolve / EvolveLab (meta-evolution of agent memory): https://arxiv.org/pdf/2512.18746
+- Self-Harness: Harnesses That Improve Themselves (agent improves its OWN harness; loop = Weakness Mining -> Harness Proposal -> Proposal Validation, regression-gated; harness-level sibling of DGM): https://arxiv.org/abs/2606.09498
+- Retrospective Harness Optimization (RHO) - improve the harness from UNLABELED past trajectories via self-preference, no ground truth/validation set; SWE-Bench Pro 59->78 in one retrospective pass: https://arxiv.org/abs/2606.05922
 PROJECTS / TOOLS (Show HN + GitHub, May 2026)
 - agent-seed — minimal self-improving harness (GOAL.md motto + scripts/go iteration protocol + AGENTS.md operating contract + scripts/commit safe wrapper + CHANGELOG.md): https://github.com/B67687/agentic-workflows/pull/82
 - Autodidact — self-evolving LOCAL-FIRST AI agent: https://github.com/BuffaloTechRider/Autodidact

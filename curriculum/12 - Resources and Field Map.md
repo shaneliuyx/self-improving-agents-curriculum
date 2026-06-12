@@ -2,7 +2,7 @@
 title: "Resources, Papers, and the Field Map"
 tags: [self-improving-agents, curriculum, bibliography, glossary, field-map]
 module: 12
-updated: 2026-06-08
+updated: 2026-06-12
 ---
 
 # 12 · Resources, Papers, and the Field Map
@@ -39,6 +39,8 @@ updated: 2026-06-08
 | [HyperAgents](https://arxiv.org/pdf/2603.19461) | Meta FAIR. The meta-agent rewrites its own code, so the mechanism that generates improvements is itself improved ("metacognitive self-modification"); extends self-improvement beyond coding. The next rung above DGM. | [[08 - Self-Modification - The DGM Pattern]] |
 | [Meta-Harness](https://arxiv.org/html/2603.28052v1) | Stanford IRIS Lab / MIT / KRAFTON. An agent optimizes the harness around a frozen model; 76.4% on Terminal-Bench 2.0 (Opus 4.6), beating hand-engineered harnesses with no weight updates. Proves harness choices alone can swing results up to 6x. | [[10 - Evaluation Harness]], [[03 - The Minimal Agent Loop]] |
 | [Agent Harness Engineering: A Survey](https://openreview.net/pdf?id=eONq7FdiHa) | Names and maps the "harness engineering" discipline: tools, patterns, evals, memory, permissions, observability, orchestration. The taxonomy for the whole curriculum's harness layer. | [[03 - The Minimal Agent Loop]], [[10 - Evaluation Harness]] |
+| [Self-Harness: Harnesses That Improve Themselves](https://arxiv.org/abs/2606.09498) | An agent improves its own harness with no human in the loop: mine weaknesses from execution traces, propose minimal harness edits, accept only after regression tests. The harness-layer sibling of DGM. | [[08 - Self-Modification - The DGM Pattern]], [[07 - Verification Gates and Layered Control]] |
+| [Retrospective Harness Optimization (RHO)](https://arxiv.org/abs/2606.05922) | Optimizes the harness from unlabeled past trajectories via self-preference - no ground truth, no validation set. One retrospective pass lifts SWE-Bench Pro 59% to 78%. Reflection straight from the RECORD log. | [[05 - Reflection and Self-Correction]], [[04 - Memory Systems]] |
 
 ### Projects and Tools
 
@@ -119,6 +121,8 @@ mindmap
       agent-seed minimal harness
     Harnesses and Evals
       Continual Harness arxiv 2605.09998
+      Self-Harness arxiv 2606.09498
+      RHO arxiv 2606.05922
       Lite-Harness local eval
       SIA open source github
       Ivy Tendril orchestrator

@@ -3,6 +3,16 @@
 All notable changes to the curriculum and scaffold. The `/improve-curriculum` command
 appends a dated entry here each time it refreshes the material from new sources.
 
+## 2026-06-12 — Self-improving the harness: Self-Harness + RHO (curriculum refresh, focus: loop engineering)
+
+Additive, sourced refresh from `/improve-curriculum` (focus argument: **loop engineering**). The `/last30days` engine ran degraded on this machine (no Reddit/X auth, so social signal was thin - GitHub/YouTube/RedditKeyless only); the high-signal evidence came from WebSearch supplements, recorded in `research/2026-06-12-loop-engineering-refresh.md`. All hard checks green: 15 notes / 30 mermaid blocks audited, 0 broken wikilinks, 0 bad mermaid keywords, `py_compile` clean on both scaffold copies, every new URL traced to a real search result (no fabricated links). The "harness/loop engineering" framing was *already* absorbed in the 2026-06-08 refresh, so this pass adds only the genuine delta - two June-2026 papers that were absent everywhere. Notes touched: 03, 05, 08, 12 (+ spec research grounding).
+
+- **08 - Self-Modification - The DGM Pattern.** New callout "Self-Harness - self-modification at the harness layer": an agent improves its own harness with no human and no stronger external model, via Weakness Mining -> Harness Proposal -> Proposal Validation (regression-gated). Framed as the harness-layer sibling of DGM - same accept-after-test gate, smaller blast radius. Source: [Self-Harness](https://arxiv.org/abs/2606.09498) (2026-06-08).
+- **05 - Reflection and Self-Correction.** New callout on RHO: runs the REFLECT step over the trajectory log with no labels and no validation set, scoring rollouts by pairwise self-preference; one retrospective pass lifts SWE-Bench Pro 59% -> 78%. Ties RECORD -> REFLECT to the recursive-drift caution (self-preference is internal, so gate it externally). Source: [Retrospective Harness Optimization](https://arxiv.org/abs/2606.05922) (2026-06-04), code [wbopan/retro-harness](https://github.com/wbopan/retro-harness).
+- **03 - The Minimal Agent Loop.** Extended the "loop you are building IS the harness" callout to name *loop engineering* - the scheduling/stopping-condition layer that turns a one-shot run into a recurring, verifiable process; reinforces why the VERIFY gate is load-bearing for unattended loops. Source: [explainx.ai loop-engineering guide](https://explainx.ai/blog/loop-engineering-coding-agents-claude-code-guide-2026).
+- **12 - Resources and Field Map.** Two new bibliography rows (Self-Harness, RHO) and two new mindmap nodes under "Harnesses and Evals".
+- **tools/curriculum-spec.md.** RESEARCH GROUNDING extended with Self-Harness and RHO so future refresh runs cite from a vetted list.
+
 ## 2026-06-08 — Harness engineering as the named paradigm + the compounding ceiling (curriculum refresh)
 
 Additive, sourced refresh from `/improve-curriculum` (focus: self-improve agent + harness + memory). Driven by the last-30-days research dump in `research/2026-06-08-self-improve-agent-harness-memory.md` plus independently-verified WebSearch supplements. All hard checks green: 0 broken wikilinks, balanced mermaid/code fences, `py_compile` clean, every new URL traced to a real source (no fabricated links). Notes touched: 03, 05, 08, 10, 12.

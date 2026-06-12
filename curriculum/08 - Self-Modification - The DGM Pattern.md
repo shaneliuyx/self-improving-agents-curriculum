@@ -2,7 +2,7 @@
 title: "Self-Modification - The DGM Pattern (Safely)"
 tags: [self-improving-agents, curriculum, self-modification, dgm, evolution, evaluation]
 module: 08
-updated: 2026-06-08
+updated: 2026-06-12
 ---
 
 # 08 · Self-Modification - The DGM Pattern (Safely)
@@ -55,6 +55,9 @@ In the original DGM paper, the agent rewrites Python tool code. For subscription
 
 > [!note] HyperAgents - the meta-agent rewrites its own harness
 > [HyperAgents](https://arxiv.org/pdf/2603.19461) (Meta FAIR) pushes the DGM idea up one level: the meta-agent rewrites *its own code*, so the mechanism that **generates** improvements is itself subject to improvement - the paper calls this *metacognitive self-modification*. It also extends self-improvement past coding into non-coding tasks ([VentureBeat coverage](https://venturebeat.com/orchestration/meta-researchers-introduce-hyperagents-to-unlock-self-improving-ai-for-non-coding-tasks)). Same caution applies, only harder: a meta-agent that edits its own improvement loop needs an even stronger external VERIFY gate, because a single bad meta-mutation can corrupt every downstream mutation.
+
+> [!note] Self-Harness - self-modification at the harness layer
+> [Self-Harness: Harnesses That Improve Themselves](https://arxiv.org/abs/2606.09498) (June 2026) applies the keep/discard idea to the *harness itself*, with no human engineer and no stronger external model in the loop. Its loop has three stages: **Weakness Mining** (find model-specific failure patterns in execution traces), **Harness Proposal** (generate diverse but minimal harness edits tied to those failures), and **Proposal Validation** (accept an edit only after regression testing). Read it as the harness-layer sibling of DGM: the same accept-after-test gate, but a far smaller blast radius than weight or code edits - which is exactly the "modify the harness and prompt, not the weights" stance this module recommends for subscription/local builders.
 
 ---
 

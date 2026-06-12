@@ -2,7 +2,7 @@
 title: "Reflection and Self-Correction"
 tags: [self-improving-agents, curriculum, reflection, self-correction, metacognition]
 module: 05
-updated: 2026-06-08
+updated: 2026-06-12
 ---
 
 # 05 · Reflection and Self-Correction
@@ -116,6 +116,9 @@ This is the REFLECT step proper. It runs *after* the run terminates and produces
 > [Rethinking Continual Experience Internalization for Self-Evolving LLM Agents](https://arxiv.org/abs/2606.04703) (June 2026) finds that under multi-iteration experience learning, existing methods cause **progressive capability collapse** rather than compounding improvement. The root cause is the granularity of what gets stored: **principle-level experience** (generalised rules distilled from multiple episodes) is significantly more durable than **instance-level experience** (raw traces of specific runs). The paper further shows that **step-wise injection** - inserting the relevant lesson at the step where it applies - substantially outperforms global batch injection, where all lessons are prepended to the system prompt at once.
 >
 > This maps directly onto the curriculum recommendation: store distilled heuristics (principle-level) in the semantic memory store rather than raw trajectories (instance-level), and inject them at the relevant reasoning step rather than loading everything into the top of the system prompt.
+
+> [!example] RHO - reflecting over your own unlabeled past trajectories
+> [Retrospective Harness Optimization (RHO)](https://arxiv.org/abs/2606.05922) (June 2026, CityU HK + MSR Asia; code at [wbopan/retro-harness](https://github.com/wbopan/retro-harness)) runs the REFLECT step over the trajectory log with **no ground-truth labels and no validation set**. It selects a diverse coreset of hard past tasks, re-solves them in parallel, scores the rollouts by self-validation and self-consistency, proposes candidate harness updates, and picks the best by **pairwise self-preference**. A single retrospective pass lifts SWE-Bench Pro from 59% to 78%. The lesson for this module: the RECORD log from [[04 - Memory Systems]] is already enough raw material to improve from - reflection does not require labeled outcomes, only honest self-comparison across past runs. But self-preference is an *internal* signal, so pair it with the external VERIFY gate of [[07 - Verification Gates and Layered Control]] before trusting a proposed change - exactly the recursive-drift caution this module opened with.
 
 ---
 
