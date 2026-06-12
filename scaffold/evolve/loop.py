@@ -20,6 +20,20 @@ history is fully revertible.
 WARNING: This loop modifies the agent's own instructions. The verification
 gate (verification/gates.py) is the ONLY thing that prevents the agent from
 mutating itself into uselessness. Do not remove or skip the gate.
+
+Two 2026 refinements ship here as opt-in modes (both additive, both keep the
+same accept-after-test discipline):
+
+  * Weakness-targeted proposal (Self-Harness, https://arxiv.org/abs/2606.09498):
+    pass `weaknesses=` (mined from reflection lessons or failed trajectories) so
+    the mutation targets observed failure patterns instead of mutating blind.
+    See `mine_weaknesses()` and the `weaknesses` argument of
+    `run_evolution_step()`. This closes the REFLECT -> LEARN link: reflection
+    output now steers the next mutation.
+  * Label-free self-preference (RHO, https://arxiv.org/abs/2606.05922): when you
+    have NO eval labels, `run_retrospective_step()` re-solves past tasks with the
+    baseline and the candidate and keeps the candidate only if the agent's own
+    pairwise self-preference favors it (the safety/containment gate still applies).
 """
 
 from __future__ import annotations
@@ -130,21 +144,40 @@ Respond ONLY with valid JSON:
 """
 
 
-def _propose_mutation(parent: PromptVariant) -> tuple[str, str] | None:
+def _propose_mutation(
+    parent: PromptVariant,
+    weaknesses: str | None = None,
+) -> tuple[str, str] | None:
     """
     Ask the LLM to propose one mutation of a parent prompt.
+
+    Args:
+        parent:     The prompt variant to mutate.
+        weaknesses: Optional text describing observed failure patterns (from
+                    `mine_weaknesses()`). When provided, the model is told to
+                    target the mutation at these weaknesses - the "Weakness
+                    Mining -> Harness Proposal" link of Self-Harness
+                    (https://arxiv.org/abs/2606.09498). When None, the proposal
+                    is blind (classic DGM behaviour), preserving backward
+                    compatibility.
 
     Returns:
         (mutation_note, mutated_prompt) or None if parsing failed.
     """
     route_decision = route("hard")
+    weakness_block = (
+        f"\n\nObserved weaknesses to fix (target your mutation at THESE):\n{weaknesses}\n"
+        if weaknesses and weaknesses.strip()
+        else ""
+    )
     messages = [
         {"role": "system", "content": _MUTATION_SYSTEM},
         {
             "role": "user",
             "content": (
                 f"Current system prompt (score={parent.score:.3f}):\n\n"
-                f"{parent.prompt}\n\n"
+                f"{parent.prompt}\n"
+                f"{weakness_block}\n"
                 "Propose one mutation to improve task performance."
             ),
         },
@@ -181,6 +214,7 @@ def run_evolution_step(
     baseline_prompt: str,
     baseline_score:  float,
     eval_fn: Any,   # Callable[[str], float] - takes a system prompt, returns score
+    weaknesses: str | None = None,
 ) -> EvolutionResult:
     """
     Run one DGM-style keep/discard evolution step.
@@ -211,8 +245,8 @@ def run_evolution_step(
         )
         _save_variant(parent)
 
-    # Propose a mutation
-    result = _propose_mutation(parent)
+    # Propose a mutation (optionally weakness-targeted - Self-Harness)
+    result = _propose_mutation(parent, weaknesses=weaknesses)
     if result is None:
         return EvolutionResult(
             accepted       = False,
@@ -261,4 +295,178 @@ def run_evolution_step(
         candidate      = candidate,
         baseline_score = baseline_score,
         verdict_reason = verdict.reason,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Weakness mining (Self-Harness, https://arxiv.org/abs/2606.09498)
+# ---------------------------------------------------------------------------
+
+def mine_weaknesses(lessons: Any) -> str:
+    """
+    Turn reflection output into a short, targeted weakness signal for
+    `_propose_mutation` / `run_evolution_step(weaknesses=...)`.
+
+    This is the "Weakness Mining" stage of Self-Harness: instead of mutating the
+    prompt blind, distil the failure patterns the agent actually hit so the next
+    proposal edits the prompt where it breaks. It is the same move agent-prep's
+    `learning_extractor.extract()` makes over an observation log - here we read
+    the structured lessons that `reflection/reflect.py` already produces.
+
+    Args:
+        lessons: a single object exposing `what_failed` / `root_cause`
+                 (e.g. reflection.reflect.Lessons), a dict with those keys, or a
+                 list of either. Lessons whose failure is empty / "nothing" are
+                 skipped (a clean run has no weakness to target).
+
+    Returns:
+        A newline-joined "- failure: ... (root cause: ...)" block, or "" if
+        there is nothing actionable to mine.
+    """
+    items = lessons if isinstance(lessons, (list, tuple)) else [lessons]
+    lines: list[str] = []
+    for item in items:
+        if isinstance(item, dict):
+            failed = item.get("what_failed")
+            cause  = item.get("root_cause")
+        else:
+            failed = getattr(item, "what_failed", None)
+            cause  = getattr(item, "root_cause", None)
+        if failed and str(failed).strip().lower() not in ("", "nothing", "none"):
+            lines.append(f"- failure: {str(failed).strip()} (root cause: {str(cause or 'unknown').strip()})")
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Label-free self-preference (RHO, https://arxiv.org/abs/2606.05922)
+# ---------------------------------------------------------------------------
+
+_PREFERENCE_SYSTEM = """\
+You are comparing two AI agents that attempted the SAME task. You do NOT have a
+ground-truth answer. Judge ONLY which response is more correct, complete, and
+useful. Be decisive.
+
+Respond ONLY with valid JSON: {"winner": "A" | "B" | "tie", "reason": "<one sentence>"}
+"""
+
+
+def self_preference(
+    prompt_a: str,
+    prompt_b: str,
+    task_inputs: list[str],
+    backend: str | None = None,
+) -> int:
+    """
+    Label-free pairwise comparison of two system prompts (RHO,
+    https://arxiv.org/abs/2606.05922).
+
+    Re-solves each task in `task_inputs` with both prompts and asks the model to
+    pick the better answer WITHOUT any ground-truth label - the same shape as
+    agent-prep's `shared/llm.py:judge`, generalised to a pairwise preference.
+    Returns the net preference for A over B: positive if A wins more, negative if
+    B wins more, 0 on a tie. This is the core of Retrospective Harness
+    Optimization: improve from the agent's own past trajectories using
+    self-preference instead of labels.
+    """
+    from agent.loop import run_agent  # lazy import to avoid a module cycle
+
+    net = 0
+    for task in task_inputs:
+        ans_a = run_agent(task, system_prompt=prompt_a, backend=backend).answer
+        ans_b = run_agent(task, system_prompt=prompt_b, backend=backend).answer
+        route_decision = route("hard")
+        raw = chat(
+            [
+                {"role": "system", "content": _PREFERENCE_SYSTEM},
+                {
+                    "role": "user",
+                    "content": (
+                        f"Task:\n{task}\n\nResponse A:\n{ans_a}\n\n"
+                        f"Response B:\n{ans_b}\n\nWhich response is better?"
+                    ),
+                },
+            ],
+            backend=route_decision.backend,
+            temperature=0.0,
+            max_tokens=200,
+        )
+        text = raw.strip()
+        if text.startswith("```"):
+            text = "\n".join(l for l in text.split("\n") if not l.strip().startswith("```")).strip()
+        try:
+            winner = str(json.loads(text).get("winner", "tie")).upper()
+        except (json.JSONDecodeError, KeyError):
+            winner = "TIE"
+        if winner == "A":
+            net += 1
+        elif winner == "B":
+            net -= 1
+    return net
+
+
+def run_retrospective_step(
+    baseline_prompt: str,
+    task_inputs: list[str],
+    weaknesses: str | None = None,
+    backend: str | None = None,
+) -> EvolutionResult:
+    """
+    One label-free evolution step (RHO, https://arxiv.org/abs/2606.05922).
+
+    Unlike `run_evolution_step` (which needs an `eval_fn` returning a labeled
+    score), this keeps or discards a candidate purely on the agent's own
+    pairwise self-preference over re-solved past tasks - no ground truth, no
+    validation set. The safety / containment gate still applies; only the
+    regression-by-score check is replaced by self-preference. Optionally pass
+    `weaknesses` to combine RHO with Self-Harness weakness targeting.
+    """
+    parent = PromptVariant(
+        variant_id    = "retro-parent",
+        prompt        = baseline_prompt,
+        score         = 0.0,
+        mutation_note = "baseline (retrospective)",
+    )
+    result = _propose_mutation(parent, weaknesses=weaknesses)
+    if result is None:
+        return EvolutionResult(
+            accepted       = False,
+            candidate      = parent,
+            baseline_score = 0.0,
+            verdict_reason = "Mutation proposal failed or returned empty prompt.",
+        )
+    mutation_note, mutated_prompt = result
+
+    # Keep decision = the agent's own pairwise self-preference (no labels).
+    pref = self_preference(mutated_prompt, baseline_prompt, task_inputs, backend=backend)
+
+    # Safety / containment gate still applies. We encode the self-preference as
+    # the (label-free) "score" so the regression gate agrees with it, then AND
+    # with pref > 0 so a tie is discarded regardless of the gate's comparison.
+    from verification.gates import verify
+    verdict = verify(
+        proposal         = {"type": "prompt", "content": mutated_prompt, "note": mutation_note},
+        candidate_score  = float(max(pref, 0)),
+        baseline_score   = 0.0,
+        run_safety_check = True,
+    )
+    accepted = verdict.accepted and pref > 0
+
+    candidate = PromptVariant(
+        variant_id    = f"retro-{int(time.time())}",
+        prompt        = mutated_prompt,
+        score         = float(pref),   # store net self-preference as the label-free score
+        parent_id     = parent.variant_id,
+        mutation_note = f"{mutation_note} [self-preference net={pref}]",
+    )
+    if accepted:
+        _save_variant(candidate)
+
+    return EvolutionResult(
+        accepted       = accepted,
+        candidate      = candidate,
+        baseline_score = 0.0,
+        verdict_reason = (
+            f"self-preference net={pref} ({'kept' if accepted else 'discarded'}); "
+            f"safety gate: {verdict.reason}"
+        ),
     )

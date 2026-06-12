@@ -13,6 +13,43 @@ Additive, sourced refresh from `/improve-curriculum` (focus argument: **loop eng
 - **12 - Resources and Field Map.** Two new bibliography rows (Self-Harness, RHO) and two new mindmap nodes under "Harnesses and Evals".
 - **tools/curriculum-spec.md.** RESEARCH GROUNDING extended with Self-Harness and RHO so future refresh runs cite from a vetted list.
 
+## 2026-06-12 — Lab coverage: materialize every module's runnable lab + Self-Harness / RHO modes (scaffold)
+
+Follow-up to the curriculum refresh above: made the runnable lab actually demonstrate the
+concepts the notes teach (it was carrying several labs as inline prose only), and wired in the two
+2026 papers as working code. Driven by a curriculum-to-scaffold coverage audit (each module's
+Learning Objectives + the scaffold files its lab references). Verified LIVE on both backends
+(oMLX :8000 + VibeProxy :8317 both up): `py_compile` clean across the whole scaffold, all new
+modules import-resolve, and `evals/behavior_test.py` = **15/15 checks PASSED** on oMLX.
+
+- **`evolve/loop.py` - two opt-in, backward-compatible modes for the new papers:**
+  - `mine_weaknesses()` + a `weaknesses=` argument on `_propose_mutation` / `run_evolution_step`
+    (Self-Harness, [arXiv:2606.09498](https://arxiv.org/abs/2606.09498)): the mutation proposal can
+    now be targeted at mined failure patterns instead of mutating blind - closing the previously
+    dead REFLECT -> LEARN link (`reflection/reflect.py` produced `Lessons` that nothing consumed).
+  - `self_preference()` + `run_retrospective_step()` (RHO,
+    [arXiv:2606.05922](https://arxiv.org/abs/2606.05922)): a label-free keep/discard path that
+    re-solves past tasks with baseline vs candidate and keeps the candidate only if the agent's own
+    pairwise self-preference favors it (the safety/containment gate still applies). The pairwise
+    judge mirrors agent-prep's `shared/llm.py:judge` pattern, adapted to our adapter.
+- **Materialized 12 lab files that the notes referenced but the scaffold did not ship** (each was
+  inline code in a note; now runnable against the unified adapter, both backends):
+  `scripts/smoke_test.py` (00/02), `agent/classify_project.py` (01), `scripts/show_trajectory.py`
+  (03), `skills/lab_demo.py` (06), `verification/try_gate.py` (07), `scripts/checkpoint.py` +
+  `scripts/commit_wrapper.py` + `evolve/sandboxed_loop.py` (09), and `frameworks/deepagents_backend.py`
+  + `deepagents_codefix.py` + `deepagents_cycle.py` + `tests/test_buggy.py` (14, guarded-optional
+  like the existing mem0 / pydantic adapters - import cleanly without `deepagents` installed).
+- **Reuse check (agent-prep).** Reviewed `/Users/yuxinliu/code/agent-prep`; it is a different (RAG)
+  stack so nothing was imported wholesale, but it independently re-implements our oMLX+VibeProxy
+  adapter (validating the design) and contributed two mirrored patterns: its `judge` (-> our
+  `self_preference`) and its `learning_extractor.extract` weakness-mining-over-a-log shape
+  (-> `mine_weaknesses`).
+- **Note fix.** `02 - Backends` referenced `labs/02_smoke_test.py`; reconciled to
+  `scripts/smoke_test.py` to match note 00 and the materialized file.
+- **Live verification (observed, not assumed):** `try_gate.py` prints ACCEPT (delta=0.30) / REJECT
+  (regression tie) / ESCALATE (containment flags `eval(`,`os.remove`,`subprocess`); `smoke_test.py`
+  passes chat+embeddings+routing on oMLX and VibeProxy; `mine_weaknesses` unit-tested.
+
 ## 2026-06-08 — Harness engineering as the named paradigm + the compounding ceiling (curriculum refresh)
 
 Additive, sourced refresh from `/improve-curriculum` (focus: self-improve agent + harness + memory). Driven by the last-30-days research dump in `research/2026-06-08-self-improve-agent-harness-memory.md` plus independently-verified WebSearch supplements. All hard checks green: 0 broken wikilinks, balanced mermaid/code fences, `py_compile` clean, every new URL traced to a real source (no fabricated links). Notes touched: 03, 05, 08, 10, 12.

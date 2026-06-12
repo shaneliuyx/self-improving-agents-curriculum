@@ -311,14 +311,14 @@ Practical routing heuristics (the `difficulty` a step maps to):
 
 **Prerequisites:** oMLX running with at least one chat model and `nomic-embed-text`; VibeProxy running and authenticated.
 
-**File:** create `labs/02_smoke_test.py` in the scaffold directory.
+**File:** create `scripts/smoke_test.py` in the scaffold directory.
 
 ```python
-# labs/02_smoke_test.py
+# scripts/smoke_test.py
 # Smoke test: verify both backends respond and embeddings work locally.
 # Run with:
-#   AGENT_BACKEND=omlx      python labs/02_smoke_test.py
-#   AGENT_BACKEND=vibeproxy python labs/02_smoke_test.py
+#   AGENT_BACKEND=omlx      python scripts/smoke_test.py
+#   AGENT_BACKEND=vibeproxy python scripts/smoke_test.py
 
 import os
 import sys
@@ -421,8 +421,8 @@ Note that embeddings always show `oMLX :8000` even when `AGENT_BACKEND=vibeproxy
 > ```bash
 > cd /Users/yuxinliu/self-improving-agent-lab
 > pip install openai  # if not already installed
-> AGENT_BACKEND=omlx python labs/02_smoke_test.py
-> AGENT_BACKEND=vibeproxy python labs/02_smoke_test.py
+> AGENT_BACKEND=omlx python scripts/smoke_test.py
+> AGENT_BACKEND=vibeproxy python scripts/smoke_test.py
 > ```
 
 ---
