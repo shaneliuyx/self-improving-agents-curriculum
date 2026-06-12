@@ -2,7 +2,7 @@
 
 [![ci](https://github.com/shaneliuyx/self-improving-agents-curriculum/actions/workflows/ci.yml/badge.svg)](https://github.com/shaneliuyx/self-improving-agents-curriculum/actions/workflows/ci.yml)
 
-A hands-on, 14-module curriculum for building **self-improving AI agents** that run on
+A hands-on, 15-module curriculum for building **self-improving AI agents** that run on
 backends you already have — a **local model via [oMLX](https://omlx.ai)** (Apple Silicon)
 or your **Claude MAX subscription via [VibeProxy](https://github.com/automazeio/vibeproxy)** —
 with **no direct paid API calls**. It ships with a runnable Python scaffold and a slash
@@ -38,7 +38,7 @@ are always local** (VibeProxy has no embeddings endpoint).
 
 | Path | What |
 |---|---|
-| [`curriculum/`](curriculum/) | The 13 Obsidian notes (`00`–`12`) + a Canvas map. Rich Mermaid diagrams. Best viewed in [Obsidian](https://obsidian.md). |
+| [`curriculum/`](curriculum/) | The 15 Obsidian notes (`00`–`14`) + a Canvas map. Rich Mermaid diagrams. Best viewed in [Obsidian](https://obsidian.md). |
 | [`scaffold/`](scaffold/) | The runnable Python lab: agent loop, memory, reflection, skills, verification gate, DGM-style evolve loop, eval harness. |
 | [`tools/`](tools/) | The maintenance automation: `refresh-research.sh`, `improve-workflow.js`, and the authoring spec. |
 | [`.claude/commands/`](.claude/commands/) | The `/improve-curriculum` slash command. |
@@ -62,6 +62,7 @@ are always local** (VibeProxy has no embeddings endpoint).
 | 11 | Capstone — Production Agent | Wire it together + production checklist |
 | 12 | Resources & Field Map | Annotated bibliography + glossary |
 | 13 | Graduating to a Framework | Optional: when/how to adopt mem0, Pydantic AI, or the Claude Agent SDK on our backends |
+| 14 | Framework Capstone — Shipping on deepagents | Build a self-improving code-fix agent on deepagents, keeping the eval gate yours |
 
 > **Local model prep (16–32 GB Macs):** Module 02 includes a model-selection table — e.g. `Qwen2.5-Coder-7B-Instruct-4bit` + `nomic-embed-text-v1.5` on 16 GB, stepping up to a 14B model on 32 GB. The Claude/VibeProxy track still installs the local embedding model.
 >
