@@ -44,7 +44,7 @@ from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import Any
 
-from backends.adapter import chat
+from backends.adapter import chat, tool_call
 from backends.router import route
 from config import settings
 
@@ -136,12 +136,55 @@ Rules:
 - Never add instructions to call the internet or modify external files.
 - Keep the mutated prompt under 2000 characters.
 
-Respond ONLY with valid JSON:
+Output NOTHING but a single JSON object - no prose, no explanation, no markdown
+fences before or after. The very first character of your reply must be '{'.
 {
   "mutation_note": "<one sentence describing the change>",
   "mutated_prompt": "<the complete new system prompt>"
 }
 """
+
+# Prefill fragment: the model's reply continues from here, so it cannot preamble
+# or rename keys. Kept in sync with the schema in _MUTATION_SYSTEM above.
+_MUTATION_PREFILL = '{\n  "mutation_note": "'
+
+
+def _extract_json_obj(raw: str) -> dict[str, Any] | None:
+    """Best-effort JSON-object extraction from a model response.
+
+    Chatty models (e.g. Claude via VibeProxy) often wrap JSON in prose and
+    markdown fences instead of returning a bare object. Try, in order:
+      1. json.loads on the whole (stripped, de-fenced) text,
+      2. json.loads on the first balanced {...} substring.
+    Returns the dict, or None if nothing parses.
+    """
+    text = raw.strip()
+    if "```" in text:  # strip any ``` / ```json fences
+        text = "\n".join(l for l in text.split("\n") if not l.strip().startswith("```")).strip()
+    try:
+        obj = json.loads(text)
+        if isinstance(obj, dict):
+            return obj
+    except json.JSONDecodeError:
+        pass
+    # Fallback: scan for the first balanced top-level {...} block.
+    start = text.find("{")
+    while start != -1:
+        depth = 0
+        for i in range(start, len(text)):
+            if text[i] == "{":
+                depth += 1
+            elif text[i] == "}":
+                depth -= 1
+                if depth == 0:
+                    try:
+                        obj = json.loads(text[start:i + 1])
+                        if isinstance(obj, dict):
+                            return obj
+                    except json.JSONDecodeError:
+                        break  # not valid; advance to next "{"
+        start = text.find("{", start + 1)
+    return None
 
 
 def _propose_mutation(
@@ -170,6 +213,34 @@ def _propose_mutation(
         if weaknesses and weaknesses.strip()
         else ""
     )
+
+    # Preferred path: Anthropic forced tool-use guarantees the schema server-side
+    # (no prose, no invented keys) - the robust fix for chatty cloud models. Both
+    # backends expose /v1/messages; tool_call() returns None if unavailable, so we
+    # transparently fall back to the OpenAI-compat prefill path below.
+    user_msg = (
+        f"Current system prompt (score={parent.score:.3f}):\n\n{parent.prompt}\n"
+        f"{weakness_block}\nPropose one mutation to improve task performance."
+    )
+    tool_out = tool_call(
+        system=_MUTATION_SYSTEM,
+        user=user_msg,
+        tool_name="propose_mutation",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "mutation_note":  {"type": "string", "description": "one sentence describing the change"},
+                "mutated_prompt": {"type": "string", "description": "the COMPLETE new system prompt text"},
+            },
+            "required": ["mutation_note", "mutated_prompt"],
+        },
+        backend=route_decision.backend,
+    )
+    if isinstance(tool_out, dict) and str(tool_out.get("mutated_prompt", "")):
+        return str(tool_out.get("mutation_note", "")), str(tool_out["mutated_prompt"])
+
+    # Fallback: OpenAI-compat chat with assistant-prefill schema pinning
+    # (reuses weakness_block from above).
     messages = [
         {"role": "system", "content": _MUTATION_SYSTEM},
         {
@@ -181,6 +252,14 @@ def _propose_mutation(
                 "Propose one mutation to improve task performance."
             ),
         },
+        # Assistant-message PREFILL pins the schema. A system-prompt instruction
+        # alone is not enough - chatty models (Claude via VibeProxy) preamble in
+        # prose and even invent their own keys (the curriculum's own "L1 prompt
+        # alone fails" finding). Prefilling the opening brace AND the first key
+        # forces the model to continue INTO our schema. Works on oMLX and
+        # VibeProxy alike (it is just a trailing assistant turn, no API-specific
+        # param). See Anthropic's "prefill Claude's response" guidance.
+        {"role": "assistant", "content": _MUTATION_PREFILL},
     ]
 
     raw = chat(
@@ -190,20 +269,16 @@ def _propose_mutation(
         max_tokens=1024,
     )
 
-    text = raw.strip()
-    if text.startswith("```"):
-        lines = text.split("\n")
-        text = "\n".join(l for l in lines if not l.strip().startswith("```")).strip()
-
-    try:
-        data = json.loads(text)
-        note   = str(data.get("mutation_note",  ""))
-        prompt = str(data.get("mutated_prompt", ""))
-        if not prompt:
-            return None
-        return note, prompt
-    except (json.JSONDecodeError, KeyError):
+    # Reattach the prefilled fragment so the response is a complete JSON object.
+    completed = raw if raw.lstrip().startswith("{") else _MUTATION_PREFILL + raw
+    data = _extract_json_obj(completed)
+    if not isinstance(data, dict):
         return None
+    note   = str(data.get("mutation_note",  ""))
+    prompt = str(data.get("mutated_prompt", ""))
+    if not prompt:
+        return None
+    return note, prompt
 
 
 # ---------------------------------------------------------------------------

@@ -2,54 +2,59 @@
 frameworks/deepagents_cycle.py - framework runs the loop; WE gate the result.
 
 This is the curriculum's non-negotiable: a self-improving agent must NOT
-evaluate its own proposals.  deepagents runs the edit-test loop; run_eval is
-the external, deterministic judge that decides keep-vs-discard.
+evaluate its own proposals. deepagents runs the edit-test loop (it has its own
+run_tests tool); `one_cycle` then re-runs the test suite INDEPENDENTLY as the
+external, deterministic judge that decides keep-vs-discard. The agent's own
+tool calls do not count - only our out-of-band pytest run does.
 
 See Module 11 §4.1 and the primitive->framework table in note 14 §3:
   "evals/run.py external eval gate" -> YOU (not the framework).
 
-Install:  pip install -e ".[frameworks]"
+Install:  pip install -e ".[frameworks]"   # installs deepagents + langchain-openai
 Run:      python -m frameworks.deepagents_cycle
 """
 
 from __future__ import annotations
 
-try:
-    from evals.run import run_eval  # the same deterministic judge from Module 10
-    _EVALS_AVAILABLE = True
-except ImportError:  # pragma: no cover - evals module may not exist yet
-    _EVALS_AVAILABLE = False
-    run_eval = None  # type: ignore
+import subprocess
+import sys
 
 from frameworks.deepagents_codefix import get_agent
 
+TEST_PATH = "tests/test_buggy.py"
 
-def one_cycle(task_msg: str) -> bool:
+
+def _suite_passes(test_path: str = TEST_PATH) -> bool:
+    """Independent ground truth: re-run the test suite ourselves and report pass/fail.
+
+    Deliberately separate from the agent's own `run_tests` tool - the gate must
+    not trust the agent's self-report.
+    """
+    proc = subprocess.run(
+        [sys.executable, "-m", "pytest", test_path, "-q"],
+        capture_output=True, text=True, timeout=120,
+    )
+    return proc.returncode == 0
+
+
+def one_cycle(task_msg: str, test_path: str = TEST_PATH) -> bool:
     """
     Run one fix cycle:
       1. deepagents agent edits + tests in its loop (framework's job).
-      2. run_eval produces an external ground-truth report (our job).
-      3. Accept iff no regressions and success_rate >= baseline.
+      2. We re-run the suite out-of-band (our job) as ground truth.
+      3. Accept iff the suite now passes.
 
     Returns True if the fix was accepted, False if it should be reverted.
-
-    Raises RuntimeError if deepagents or evals.run are not available.
+    Raises RuntimeError if deepagents is not installed (via get_agent()).
     """
-    if not _EVALS_AVAILABLE:  # pragma: no cover
-        raise RuntimeError(
-            "evals.run is not available.\n"
-            "Build the evals module first (Module 10 in the curriculum).\n"
-            "Run:  pip install -e \".[frameworks]\""
-        )
-
-    get_agent().invoke({"messages": task_msg})         # framework: edit + test loop
-    report = run_eval("post-deepagents-fix")           # OURS: external ground truth
-    accepted = report.regression_count == 0 and report.success_rate >= report.baseline_rate
-    # keep the edit on accept; git revert on reject (Module 08 discipline, unchanged)
-    return accepted
+    before = _suite_passes(test_path)
+    get_agent().invoke({"messages": task_msg})   # framework: edit + test loop
+    after = _suite_passes(test_path)              # OURS: independent ground truth
+    print(f"[gate] suite passed before={before} after={after}")
+    return after
 
 
 if __name__ == "__main__":
-    task = "Fix the failing test in tests/test_buggy.py"
+    task = f"Fix the failing test in {TEST_PATH} by editing the source under src/, not the test."
     accepted = one_cycle(task)
-    print("Fix accepted." if accepted else "Fix REJECTED - revert.")
+    print("Fix accepted (suite passes)." if accepted else "Fix REJECTED - suite still failing; revert.")

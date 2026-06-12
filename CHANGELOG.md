@@ -3,6 +3,50 @@
 All notable changes to the curriculum and scaffold. The `/improve-curriculum` command
 appends a dated entry here each time it refreshes the material from new sources.
 
+## 2026-06-12 — Live-verified the labs: deepagents code-fix loop + portable schema-forced tool use (RHO completes both backends)
+
+Took the previous entry's code from "import-verified" to "runs live on both backends". Installed
+deepagents (fresh py3.13 venv) and executed the Module-14 code-fix loop and the Module-05/08 RHO
+loop end-to-end against oMLX (`:8000`) and Claude-MAX-via-VibeProxy (`:8317`). The regression guard
+`evals/behavior_test.py` stays **15/15 PASS** on oMLX after the core changes.
+
+- **deepagents code-fix loop now genuinely works** (`frameworks/deepagents_codefix.py`). The agent
+  read `tests/test_buggy.py`, edited the REAL `src/buggy_math.py` (`a - b` -> `a + b`), and an
+  out-of-band `pytest` re-run (`frameworks/deepagents_cycle.py`, the external gate that does NOT trust
+  the agent's self-report) confirmed **3/3 tests pass -> ACCEPTED**. Root-cause fix: deepagents'
+  built-in file tools default to a STATE-backed VIRTUAL filesystem, so edits never reached disk and
+  the gate looped to `GraphRecursionError`. Pass `FilesystemBackend(root_dir=project, virtual_mode=False)`
+  to edit real files (set `DEEPAGENTS_VIRTUAL=1` to demonstrate the trap). Added a real failing target
+  `src/buggy_math.py` + `tests/test_buggy.py`.
+- **Schema-forced tool use makes the RHO/DGM mutation step reliable on cloud models**
+  (`backends/adapter.py::tool_call`). A system-prompt "respond only JSON" instruction is not enough -
+  Claude via VibeProxy preambles in prose and invents keys (the curriculum's own "L1 prompt alone
+  fails" finding, now reproduced). `tool_call()` forces a single schema-validated tool call via the
+  backend's native Anthropic Messages endpoint (`/v1/messages`, which BOTH backends expose) and parses
+  two response shapes: native `tool_use` (VibeProxy) and text-faked `<tools>{name,arguments}</tools>`
+  (oMLX local models emit the call as text, not a `tool_use`/`tool_calls` block). `_propose_mutation`
+  now tries tool-use first and falls back to OpenAI-compat chat with assistant-prefill schema pinning.
+- **RHO loop completes on BOTH backends, with BOTH outcomes verified** (`evolve/loop.py`).
+  `run_retrospective_step` proposes a real candidate, re-solves the past tasks with baseline vs
+  candidate, and keeps/discards by pairwise `self_preference` (label-free):
+  - DISCARD (net=0) on trivial arithmetic - a capable agent answers correctly under either prompt, so
+    neither wins. This is the CORRECT result, not a failure. (Confirmed the judge itself discriminates:
+    given answers "42" vs "0" it picks 42.)
+  - ACCEPT (net=3, all gates passed) on a reasoning-sensitive task set: from a no-chain-of-thought
+    baseline, the mutation "allow step-by-step reasoning" beat the baseline 3-0 on multi-step word
+    problems run on oMLX Qwen2.5-Coder-7B. This is the canonical chain-of-thought prompt-sensitivity
+    regime (Wei et al., https://arxiv.org/abs/2201.11903: GSM8K 10.4 -> 40.7) - it shows on a smaller
+    local model where prompt quality changes the answer; a frontier model ties because it answers
+    correctly regardless. New runnable demo: `evolve/rho_demo.py`.
+- **Robustness fixes** carried in `evolve/loop.py`: `_extract_json_obj` (balanced-brace JSON extraction
+  from prose/fenced replies) and `_MUTATION_PREFILL` (assistant-prefill that pins the opening brace and
+  first key).
+- **Packaging.** `[frameworks]` extra now installs `deepagents` + `langchain-openai`, so
+  `pip install -e ".[frameworks]"` matches Module 14's instructions.
+- **Reference (VibeProxy Anthropic support), confirmed live, not just docs:** `POST :8317/v1/messages`
+  returns an Anthropic-shaped message; forced `tool_choice` returns exact-schema `tool_use`. Repo:
+  https://github.com/automazeio/vibeproxy
+
 ## 2026-06-12 — Self-improving the harness: Self-Harness + RHO (curriculum refresh, focus: loop engineering)
 
 Additive, sourced refresh from `/improve-curriculum` (focus argument: **loop engineering**). The `/last30days` engine ran degraded on this machine (no Reddit/X auth, so social signal was thin - GitHub/YouTube/RedditKeyless only); the high-signal evidence came from WebSearch supplements, recorded in `research/2026-06-12-loop-engineering-refresh.md`. All hard checks green: 15 notes / 30 mermaid blocks audited, 0 broken wikilinks, 0 bad mermaid keywords, `py_compile` clean on both scaffold copies, every new URL traced to a real search result (no fabricated links). The "harness/loop engineering" framing was *already* absorbed in the 2026-06-08 refresh, so this pass adds only the genuine delta - two June-2026 papers that were absent everywhere. Notes touched: 03, 05, 08, 12 (+ spec research grounding).

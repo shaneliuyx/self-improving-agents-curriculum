@@ -154,6 +154,112 @@ def chat(
     return response.choices[0].message.content or ""
 
 
+def tool_call(
+    system: str,
+    user: str,
+    tool_name: str,
+    input_schema: dict[str, Any],
+    backend: str | None = None,
+    model: str | None = None,
+    max_tokens: int = 1024,
+) -> dict[str, Any] | None:
+    """
+    Force a single, schema-validated tool call via the backend's native
+    Anthropic Messages endpoint (/v1/messages) and return the tool input dict.
+
+    Why this exists: a system-prompt instruction asking for JSON is not reliable
+    on chatty cloud models (Claude via VibeProxy preambles in prose and invents
+    keys - the curriculum's own "L1 prompt alone fails" finding). Anthropic
+    tool use with a forced `tool_choice` compiles the schema server-side and
+    GUARANTEES the requested fields. Both backends expose /v1/messages (oMLX
+    Anthropic-compat on :8000, VibeProxy on :8317), so this is portable; it
+    returns None if the endpoint is unavailable or returns no tool_use block,
+    so callers can fall back to the OpenAI-compat path.
+
+    Uses stdlib urllib (no new dependency).
+    """
+    import json as _json
+    import urllib.request as _ur
+    import urllib.error as _ue
+
+    key = backend or os.getenv("AGENT_BACKEND", "omlx")
+    if key not in BACKENDS:
+        raise ValueError(f"Unknown backend {key!r}. Valid: {list(BACKENDS)}")
+    b = BACKENDS[key]
+    url = b["base_url"].rstrip("/") + "/messages"   # base_url ends in /v1
+    api_key = (
+        os.getenv("OMLX_API_KEY", "not-needed") if key == "omlx"
+        else os.getenv("LLM_API_KEY", "not-needed")
+    )
+    payload = {
+        "model": model or b["model"],
+        "max_tokens": max_tokens,
+        "system": system,
+        "messages": [{"role": "user", "content": user}],
+        "tools": [{"name": tool_name, "description": f"Produce a {tool_name} result.",
+                   "input_schema": input_schema}],
+        "tool_choice": {"type": "tool", "name": tool_name},
+    }
+    req = _ur.Request(
+        url,
+        data=_json.dumps(payload).encode("utf-8"),
+        headers={
+            "content-type": "application/json",
+            "anthropic-version": "2023-06-01",
+            "x-api-key": api_key,                  # native Anthropic auth header
+            "authorization": f"Bearer {api_key}",  # VibeProxy/oMLX tolerate either
+        },
+        method="POST",
+    )
+    timeout_s = float(os.getenv("LLM_TIMEOUT_S", "60"))
+    try:
+        with _ur.urlopen(req, timeout=timeout_s) as resp:
+            data = _json.loads(resp.read().decode("utf-8"))
+    except (_ue.URLError, TimeoutError, ValueError):
+        return None
+
+    # Shape 1 - native Anthropic tool_use block (VibeProxy / real Anthropic).
+    for block in data.get("content", []):
+        if block.get("type") == "tool_use" and isinstance(block.get("input"), dict):
+            return block["input"]
+
+    # Shape 2 - text-faked tool call (oMLX local models render the call as TEXT,
+    # e.g. <tools>{"name": ..., "arguments": {...}}</tools>, with no tool_use
+    # block). Extract the first balanced {...} from any text block and unwrap an
+    # "arguments"/"input" envelope if present.
+    for block in data.get("content", []):
+        if block.get("type") == "text" and isinstance(block.get("text"), str):
+            obj = _first_json_obj(block["text"])
+            if isinstance(obj, dict):
+                for envelope in ("arguments", "input", "parameters"):
+                    if isinstance(obj.get(envelope), dict):
+                        return obj[envelope]
+                return obj
+    return None
+
+
+def _first_json_obj(text: str) -> dict[str, Any] | None:
+    """Return the first balanced {...} JSON object found in text, or None."""
+    import json as _json
+    start = text.find("{")
+    while start != -1:
+        depth = 0
+        for i in range(start, len(text)):
+            if text[i] == "{":
+                depth += 1
+            elif text[i] == "}":
+                depth -= 1
+                if depth == 0:
+                    try:
+                        obj = _json.loads(text[start:i + 1])
+                        if isinstance(obj, dict):
+                            return obj
+                    except _json.JSONDecodeError:
+                        break
+        start = text.find("{", start + 1)
+    return None
+
+
 def embed(texts: list[str]) -> list[list[float]]:
     """
     Embed a list of strings using the LOCAL oMLX embeddings endpoint.
