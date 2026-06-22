@@ -430,10 +430,13 @@ class EvalReport:
     results: list[TaskResult]
 
 def run_task(task: Task, variant_system: str | None = None) -> TaskResult:
-    # IMPORTANT: drive the REAL agent loop (run_agent), not a bare
-    # chat.completions call. A single-shot completion measures the MODEL;
-    # the eval must measure the AGENT - tools, loop, recovery - or it cannot
-    # catch harness regressions. run_agent honors task.difficulty for routing.
+    # IMPORTANT: drive the REAL agent loop, not a bare chat.completions call.
+    # A single-shot completion measures the MODEL; the eval must measure the
+    # AGENT - tools, loop, recovery - or it cannot catch harness regressions.
+    # The lab's agent/loop.py is a thin wrapper that delegates to
+    # agentkit.run_agent (it accepts the lab's system_override/difficulty kwargs
+    # and threads them into agentkit's run_agent + difficulty router). The
+    # returned object is an agentkit AgentResult, so result.answer is the answer.
     from agent.loop import run_agent
     t0 = time.perf_counter()
     try:

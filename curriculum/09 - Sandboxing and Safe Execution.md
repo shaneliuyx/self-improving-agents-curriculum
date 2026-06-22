@@ -13,6 +13,14 @@ updated: 2026-06-01
 > - [[08 - Self-Modification - The DGM Pattern]] - you should understand how an agent rewrites its own code before learning how to contain that rewriting safely
 > - [[07 - Verification Gates and Layered Control]] - verification gates run *inside* the sandbox; this module explains the fence around them
 
+> [!note] In the lab
+> The sandboxing stack taught here is backed by the `agentkit` library (`scaffold/lab_agent.py`). Concretely:
+> - **Local containment** — `agentkit.sandbox.SubprocessSandbox`: argv-not-shell (so `"; rm -rf"` injected into code is inert), cwd-jailed, timed, output-capped. `.run(code, timeout=5, cwd=".")` returns an `ExecResult` with `.stdout`, `.stderr`, `.exit_code`, `.duration`.
+> - **Egress control** — `agentkit.sandbox.net_guard`: default-deny allowlist. `net_guard.assert_allowed(url)` raises `EgressBlocked` for un-allowlisted hosts; `net_guard.is_allowed(url)` and `net_guard.allowed_hosts()` are the query helpers.
+> - **Untrusted output** — `agentkit.agent.quarantine(text, source="tool")`: wraps subprocess/tool output before it re-enters the prompt; the raw result still appears in the trajectory audit trail.
+> - **Hard-isolation seam** — `agentkit.sandbox.DockerSandbox`: shares the `Sandbox` Protocol with `SubprocessSandbox`; swap it in when you need container-level isolation without changing the evolve/gate layer.
+> - **Gate integration** — the CONTAINMENT stage of `agentkit.gates` (see [[07 - Verification Gates and Layered Control]]) runs proposals through this same `SubprocessSandbox` and escalates anything that touches filesystem/subprocess/network/exec. See `scaffold/lab_agent.py`.
+
 ---
 
 ## Learning Objectives
@@ -80,9 +88,9 @@ network:
 > [!note] VibeProxy ToS note
 > Using a Claude MAX subscription via VibeProxy (and by extension Managed Agents features) may violate Anthropic's Terms of Service. Evaluate your use case before routing production workloads through the proxy.
 
-### 2.4 Plain Docker
+### 2.4 Plain Docker / DockerSandbox
 
-The lowest-dependency option. Run the agent loop as a subprocess inside a Docker container with explicit mounts and network modes:
+The lowest-dependency option. Run the agent loop as a subprocess inside a Docker container with explicit mounts and network modes. In the agentkit library, `DockerSandbox` is the named seam for this hard-isolation tier — it shares the `Sandbox` Protocol with `SubprocessSandbox`, so the evolve/gate layer can swap between them without code changes.
 
 ```bash
 docker run --rm \
@@ -340,13 +348,17 @@ class CheckpointStore:
 
 ### 5.3 Running the Agent Loop in a Constrained Subprocess
 
-This ties together the sandbox (subprocess with restricted environment), the checkpoint store, and the LLM backend:
+This ties together the sandbox (subprocess with restricted environment), the checkpoint store, and the LLM backend. The key containment primitive is `agentkit.sandbox.SubprocessSandbox`: it runs proposed code via argv (not a shell), jails paths within `cwd`, enforces a timeout, and caps output size. The gate's CONTAINMENT stage (from [[07 - Verification Gates and Layered Control]]) routes all proposals through this same `SubprocessSandbox` and escalates anything that touches filesystem/subprocess/network/exec.
+
+Tool and subprocess output is wrapped with `agentkit.agent.quarantine` before re-entering the prompt, so untrusted content is marked in the trajectory audit trail even though the raw result remains visible.
 
 ```python
 # evolve/sandboxed_loop.py
 """
 Self-modifying agent loop wrapped in:
-  - a constrained subprocess for each mutation
+  - agentkit SubprocessSandbox for each mutation execution
+  - agentkit net_guard for egress control
+  - agentkit quarantine for untrusted output re-entering the prompt
   - checkpoint/rollback around every LEARN step
   - the unified LLM adapter (omlx or vibeproxy)
 
@@ -357,16 +369,15 @@ Run:
 
 import json
 import os
-import subprocess
 import sys
 from pathlib import Path
 
 # Project root (one level up from evolve/)
 ROOT = Path(__file__).parent.parent
-
-# Add root to path so we can import backends/adapter.py
 sys.path.insert(0, str(ROOT))
 
+from agentkit.sandbox import SubprocessSandbox, net_guard
+from agentkit.agent import quarantine
 from backends.adapter import make_client
 from scripts.checkpoint import CheckpointStore
 from verification.gates import run_gates  # returns True/False
@@ -378,9 +389,16 @@ WORKSPACE.mkdir(parents=True, exist_ok=True)
 SYSTEM_PROMPT = (ROOT / "AGENTS.md").read_text()
 GOAL = (ROOT / "GOAL.md").read_text()
 
+# One sandbox instance; reused across iterations
+_sandbox = SubprocessSandbox(max_output_bytes=64 * 1024)
+
 
 def propose_mutation(client, model: str, context: str) -> str:
     """Ask the LLM to propose a self-modification given recent context."""
+    # Guard the outbound LLM call with net_guard (raises EgressBlocked if not allowlisted)
+    backend_url = os.getenv("OMLX_BASE_URL", "http://localhost:8000/v1")
+    net_guard.assert_allowed(backend_url)
+
     response = client.chat.completions.create(
         model=model,
         messages=[
@@ -403,25 +421,29 @@ def propose_mutation(client, model: str, context: str) -> str:
 
 
 def apply_patch(patch_json: str) -> bool:
-    """Write the proposed patch to disk. Returns True if successful."""
+    """
+    Execute the proposed patch inside SubprocessSandbox.
+    argv-not-shell: shell injection in the patch string is inert.
+    cwd-jailed: paths are asserted within ROOT.
+    """
     try:
         data = json.loads(patch_json)
-        target = ROOT / data["file"]
-        if "patch" in data and data["patch"].startswith("---"):
-            # Apply as unified diff via patch(1)
-            result = subprocess.run(
-                ["patch", "-p1"],
-                input=data["patch"],
-                text=True,
-                cwd=str(ROOT),
-                capture_output=True,
-            )
-            return result.returncode == 0
-        else:
-            # Full file replacement
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(data["patch"])
-            return True
+        code = data.get("patch", "")
+        if not code:
+            return False
+
+        result = _sandbox.run(code, timeout=10, cwd=str(ROOT))
+
+        # Quarantine subprocess output before it re-enters the prompt
+        safe_stdout = quarantine(result.stdout, source="sandbox")
+        safe_stderr = quarantine(result.stderr, source="sandbox")
+
+        if result.exit_code != 0:
+            print(f"[apply_patch] sandbox exit_code={result.exit_code} stderr={safe_stderr[:200]}", file=sys.stderr)
+            return False
+
+        print(f"[apply_patch] ok duration={result.duration:.2f}s stdout={safe_stdout[:120]}")
+        return True
     except (json.JSONDecodeError, KeyError, OSError) as e:
         print(f"[apply_patch] error: {e}", file=sys.stderr)
         return False
@@ -434,6 +456,7 @@ def main() -> None:
 
     print(f"[loop] backend={os.getenv('AGENT_BACKEND', 'omlx')} model={model}")
     print(f"[loop] max_iterations={MAX_ITERATIONS}")
+    print(f"[loop] egress allowlist={net_guard.allowed_hosts()}")
 
     for i in range(MAX_ITERATIONS):
         print(f"\n--- Iteration {i+1}/{MAX_ITERATIONS} ---")
@@ -446,10 +469,10 @@ def main() -> None:
         raw = propose_mutation(client, model, context)
         print(f"[propose] {raw[:120]}...")
 
-        # 3. APPLY mutation (inside this process = constrained to ROOT only)
+        # 3. APPLY mutation via SubprocessSandbox (argv-not-shell, cwd-jailed, timed)
         applied = apply_patch(raw)
         if not applied:
-            print("[apply] patch failed, rolling back")
+            print("[apply] sandbox execution failed, rolling back")
             store.rollback(sha)
             context_window.append(f"iteration {i+1}: patch failed to apply")
             continue
@@ -573,28 +596,29 @@ def safe_write(relative_path: str, content: str) -> None:
 
 ### Network Allowlist
 
-For oMLX and VibeProxy the agent only needs to reach two local addresses. If you are not using Docker's `--network` flag, enforce at the socket level:
+For oMLX and VibeProxy the agent only needs to reach two local addresses. The lab uses `agentkit.sandbox.net_guard` — a default-deny egress allowlist that complements `SubprocessSandbox`'s local containment: the sandbox controls *what* code can do locally; `net_guard` controls *where* it can reach on the network.
 
 ```python
-# agent/net_guard.py
-import socket
-_original_connect = socket.socket.connect
+from agentkit.sandbox import net_guard
 
-ALLOWED_HOSTS = {"localhost", "127.0.0.1", "host.docker.internal"}
-ALLOWED_PORTS = {8000, 8317}
+# Inspect the current allowlist
+print(net_guard.allowed_hosts())   # -> set[str] of permitted hostnames
 
-def _guarded_connect(self, address):
-    host, port = address[0], address[1]
-    if host not in ALLOWED_HOSTS or port not in ALLOWED_PORTS:
-        raise PermissionError(
-            f"Network connection to {host}:{port} blocked by capability scope. "
-            f"Allowed: {ALLOWED_HOSTS} x {ALLOWED_PORTS}"
-        )
-    return _original_connect(self, address)
+# Guard a URL before making a request
+url = "http://localhost:8000/v1/chat/completions"
+if net_guard.is_allowed(url):
+    # safe to proceed
+    ...
 
-# Monkey-patch at startup; import this module before any network calls
-socket.socket.connect = _guarded_connect
+# Or raise immediately on a blocked host (raises EgressBlocked)
+net_guard.assert_allowed(url)
+
+# A call to an un-allowlisted host raises EgressBlocked
+net_guard.assert_allowed("https://exfil.example.com/data")
+# -> EgressBlocked: host 'exfil.example.com' is not in the egress allowlist
 ```
+
+`net_guard.assert_allowed(url)` is the canonical guard call: place it at every outbound request site so blocked hosts fail loudly rather than silently succeeding or producing a confusing socket error.
 
 ---
 

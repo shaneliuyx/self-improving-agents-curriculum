@@ -1,13 +1,13 @@
 ---
 title: "Graduating to a Framework"
-tags: [self-improving-agents, curriculum, frameworks, mem0, pydantic-ai]
+tags: [self-improving-agents, curriculum, frameworks, agentkit, mem0, pydantic-ai]
 module: 13
-updated: 2026-06-01
+updated: 2026-06-22
 ---
 
 # 13 · Graduating to a Framework
 
-**What you'll learn.** You built the whole loop on the raw OpenAI SDK on purpose - so you can *see* every step. This appendix module asks the next question: now that you understand the mechanics, should you adopt a popular agent framework, and if so, which one and where? You'll see what the real 2026 self-improving-agent projects actually use, the make-or-break test for any framework in this curriculum (does it accept a custom `base_url`?), and two concrete, backend-compatible drop-ins shipped in `frameworks/`.
+**What you'll learn.** You built the whole loop on the raw OpenAI SDK on purpose - so you can *see* every step. This appendix module asks the next question: now that you understand the mechanics, should you adopt a maintained library or framework, and if so, which one and where? You'll see what the real 2026 self-improving-agent projects actually use, the make-or-break test for any framework in this curriculum (does it accept a custom `base_url`?), two concrete backend-compatible drop-ins shipped in `frameworks/`, and — most importantly — `agentkit`, the lean library that is literally the extracted, hardened form of the lab code you just built.
 
 > [!info] Prerequisites
 > - [[11 - Capstone - Production Agent]] - you should have the full raw-SDK loop working end to end first
@@ -20,6 +20,8 @@ updated: 2026-06-01
 - [ ] Recall what the real self-improving-agent projects are built on (and what they avoid)
 - [ ] Apply the one make-or-break test: can the framework target oMLX/VibeProxy via a custom `base_url`?
 - [ ] Decide *when* a framework helps vs. when it only adds opacity
+- [ ] Explain what agentkit is, where it comes from, and how each hand-rolled lab module maps to an `agentkit.<module>`
+- [ ] Collapse the full lab scaffold to `agentkit.SelfImprovingAgent.from_config(...)` and understand what each constructor argument replaces
 - [ ] Swap `memory/store.py` for [mem0](https://github.com/mem0ai/mem0) using `frameworks/mem0_memory.py`
 - [ ] Swap `agent/loop.py` for [Pydantic AI](https://github.com/pydantic/pydantic-ai) using `frameworks/pydantic_ai_loop.py`
 - [ ] Explain why the Claude Agent SDK fits the VibeProxy track but not oMLX-local
@@ -56,6 +58,7 @@ flowchart TD
     Q1{"Do you understand<br/>the raw loop already?"}
     Q1 -->|No| Build["Build it raw first<br/>Modules 03-08"]
     Q1 -->|Yes| Q2{"What do you<br/>actually need?"}
+    Q2 -->|Whole scaffold as a library| AK["agentkit<br/>SelfImprovingAgent.from_config"]
     Q2 -->|Memory dedup + scoping| Mem0["mem0<br/>swap memory/store.py"]
     Q2 -->|Cleaner tool loop| Pyd["Pydantic AI<br/>swap agent/loop.py"]
     Q2 -->|Claude-native self-improvement| CAS["Claude Agent SDK<br/>VibeProxy / Claude track"]
@@ -63,6 +66,82 @@ flowchart TD
 ```
 
 *Decision flow - a framework is a tool for a specific need, not a default. If you cannot name what it buys you, you do not need it yet.*
+
+---
+
+## 2.5 The natural first graduation: agentkit
+
+Before reaching for a third-party framework, there is a closer option: **[agentkit](https://github.com/shaneliuyx/agentkit)** (`pip install "git+https://github.com/shaneliuyx/agentkit"`), a lean, reusable agent-systems library built in two layers.
+
+**Why agentkit is the natural first step**: it is not a separate project you are adopting from the outside. Its `runtime`, `memory`, `agent`-loop, and `router` code is *extracted and hardened* from the measured lab implementations this curriculum builds in Modules 03-09. The hand-coded oMLX/openai clients are replaced by Protocol seams (`Embedder`, `LLMClient`) so any backend plugs in. The `context`, `orchestrator`, `quality`, `roles`, `batch`, and `backends` modules port the patterns you studied. In short, agentkit is **the library form of the code you just wrote by hand**.
+
+### Design axiom
+
+> A cheap deterministic stage gates the expensive LLM stage — the model is the last resort, not the default.
+
+This is the same discipline enforced throughout this curriculum (zero-LLM context compaction, deterministic-first memory retrieval, rule-driven topology). agentkit formalises it as an architectural principle across all modules.
+
+### Module map: hand-rolled → agentkit
+
+| Lab module (what you built) | agentkit module | Notes |
+|---|---|---|
+| `context/compaction.py` | `agentkit.context` | deterministic zero-LLM compaction |
+| `memory/store.py` | `agentkit.memory` | tiered episodic/semantic vector store over an injected `Embedder` |
+| `agent/loop.py` | `agentkit.agent` | DI ReAct loop + difficulty router + role presets + batch |
+| `runtime/dag.py` | `agentkit.runtime` | durable DAG, survives kill -9 |
+| orchestration patterns (Module 09) | `agentkit.orchestrator` | pure stall/diversity/select long-horizon control |
+| multi-agent topology (Module 09) | `agentkit.topology` | rule-driven multi-agent shapes |
+| source-grounding verify | `agentkit.quality` | source-grounding verify |
+| `backends/adapter.py` | `agentkit.backends` | `CliLLMClient` — CLI as the model, no API key |
+| Protocol seams | `agentkit.types` | `Embedder`, `LLMClient`, `ChatResult`, `Message` |
+| role YAML configs | `agentkit.config` | roles as declarative YAML/JSON |
+| `sandbox/` | `agentkit.sandbox` | `SubprocessSandbox` + `net_guard` |
+| `gates/admission.py` | `agentkit.gates` | LEARN admission gate; LLM is a veto not a vote |
+| `evolve/optimizer.py` | `agentkit.evolve` | text-space optimizer: DGM evolve_prompt + RHO label-free |
+| `skills/library.py` | `agentkit.skills` | `SkillLibrary` + `optimize_skill` / `SkillOpt` |
+| `planner/dag_config.py` | `agentkit.planner` | task → subtask DAG config |
+| `codegen/` | `agentkit.codegen` | agent-authored sandbox-validated tools |
+| the whole capstone loop | `agentkit.selfimproving` | `SelfImprovingAgent` facade — the complete loop, one object |
+
+### The collapse
+
+Once you have agentkit installed, the entire scaffold collapses to three calls:
+
+```python
+from agentkit import SelfImprovingAgent
+
+agent = SelfImprovingAgent.from_config(
+    "./agent_config",      # YAML/JSON role + skill configs
+    backend=MyClient(),    # any LLMClient — e.g. your oMLX or VibeProxy adapter
+    embedder=MyEmbedder()  # any Embedder — e.g. your local oMLX embedder
+)
+
+# run a task
+result = agent.run(task)
+
+# improve from an eval set
+agent.improve(eval_set, role="researcher", epochs=3)
+
+# retrieve a skill
+agent.skills.retrieve("web_search")
+
+# forge a new tool
+agent.forge_tool("summarise_pdf", description="...", tests=[...])
+```
+
+See `scaffold/lab_agent.py` for the worked example of the lab running on agentkit with the oMLX adapters wired in.
+
+### Honest scope
+
+agentkit is a **lean, local-first, single-tenant library**. It is not the right graduation target for:
+- RAG corpus tuning or multi-tenant retrieval isolation
+- Proxy deployment or cloud-hosted multi-agent infrastructure
+- Anything requiring a managed orchestration runtime
+
+For those workloads, heavier frameworks (e.g. deepagents, covered in [[14 - Framework Capstone - Shipping on deepagents]]) address different ground. agentkit's value proposition is narrow and clear: the library form of what you built, with Protocol seams where the curriculum left adapters.
+
+> [!note] In the lab: the scaffold already graduated
+> `scaffold/lab_agent.py` builds the full lab agent **on agentkit** — `SelfImprovingAgent.from_config` wired with oMLX adapters. Each chapter's hand-rolled module is now the matching `agentkit.<module>`. You did not need a third-party framework to graduate: the lab code extracted itself into a reusable library, and `scaffold/lab_agent.py` is proof that the graduation happened.
 
 ---
 
@@ -82,13 +161,14 @@ Every one of these carries the *same* caveat: it hides the ReAct loop or the ext
 ```mermaid
 %%{init: {"theme":"neutral","themeVariables":{"fontSize":"16px"},"flowchart":{"htmlLabels":true,"nodeSpacing":40,"rankSpacing":46,"padding":6,"useMaxWidth":true}}}%%
 flowchart LR
-    L1["agent/loop.py<br/>hand-built ReAct"] -->|graduate to| F1["Pydantic AI<br/>or OpenAI Agents SDK"]
-    L2["memory/store.py<br/>sqlite + embeddings"] -->|graduate to| F2["mem0"]
+    L0["whole scaffold<br/>Modules 03-09"] -->|primary graduation| AK["agentkit<br/>SelfImprovingAgent.from_config"]
+    L1["agent/loop.py<br/>hand-built ReAct"] -->|also graduates to| F1["Pydantic AI<br/>or OpenAI Agents SDK"]
+    L2["memory/store.py<br/>sqlite + embeddings"] -->|also graduates to| F2["mem0"]
     L3["whole agent<br/>Claude / VibeProxy track"] -->|graduate to| F3["Claude Agent SDK"]
     L4["multi-agent crews"] -->|graduate to| F4["CrewAI or LangGraph"]
 ```
 
-*Each hand-built lab component maps to the framework that can replace it - once you understand what it does.*
+*agentkit is the primary graduation — the library form of the whole scaffold. The other routes are targeted swaps for specific sub-components once you understand what each does.*
 
 ---
 
@@ -187,6 +267,9 @@ async for message in query(prompt="What is 17 * 23?", options=options):
 > 3. Where does `frameworks/mem0_memory.py` send embeddings, and why is that not configurable per backend?
 > 4. Why does the Claude Agent SDK fit the VibeProxy track but not oMLX-local?
 > 5. Give one concrete reason heavy framework abstraction conflicts with Module 08 (self-modification).
+> 6. What is agentkit's provenance — why is it described as "the library form of the code you just built" rather than an external dependency?
+> 7. Which two constructor arguments to `SelfImprovingAgent.from_config` keep agentkit backend-agnostic, and what Protocol do they satisfy?
+> 8. Name two workloads that are explicitly *out of scope* for agentkit and should use a heavier framework instead.
 
 ---
 

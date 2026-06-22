@@ -7,7 +7,7 @@ updated: 2026-06-01
 
 # 04 · Memory - Episodic, Semantic, Procedural
 
-**What you'll learn:** Every time an agent acts, it generates raw experience - tool calls, reasoning traces, outcomes, failures. Without a memory layer, that experience evaporates and the agent restarts blind on every session. This module builds the "experience layer": how to classify what happened into three reusable memory types (episodic, semantic, procedural), store them in a lightweight SQLite + local-vector index, retrieve the right memories at query time using similarity and recency, and write them back as part of the RECORD step in the ACT - RECORD - REFLECT - LEARN loop. You will have a working `memory/store.py` by the end.
+**What you'll learn:** Every time an agent acts, it generates raw experience - tool calls, reasoning traces, outcomes, failures. Without a memory layer, that experience evaporates and the agent restarts blind on every session. This module builds the "experience layer": how to classify what happened into three reusable memory types (episodic, semantic, procedural), store them in a lightweight SQLite + local-vector index, retrieve the right memories at query time using similarity and recency, and write them back as part of the RECORD step in the ACT - RECORD - REFLECT - LEARN loop. In the lab you will wire `agentkit.memory.MemoryStore` — a public SQLite + numpy vector store with an injected embedder — rather than building that plumbing from scratch.
 
 > [!info] Prerequisites
 > - [[03 - The Minimal Agent Loop]] - you need a running agent loop before adding a memory layer
@@ -19,9 +19,9 @@ updated: 2026-06-01
 
 - [ ] Distinguish episodic, semantic, and procedural memory and give one concrete agent example of each
 - [ ] Explain why embeddings must be local even when generation runs through VibeProxy
-- [ ] Implement a `MemoryStore` that persists to SQLite and indexes vectors in-process
-- [ ] Write a retrieval function that blends cosine similarity, recency decay, and salience
-- [ ] Hook `store()` into the agent loop's RECORD step so experience accumulates automatically
+- [ ] Use `agentkit.MemoryStore` (SQLite + numpy, injected embedder) to persist episodic and semantic entries
+- [ ] Explain the blended retrieval score (cosine similarity + recency decay + salience) and why `agentkit` tracks `access_count`/`last_used` per entry
+- [ ] Hook `.add()` into the agent loop's RECORD step and `.inject_context()` into the prompt-building step so experience accumulates automatically
 - [ ] Describe what [MemEvolve](https://arxiv.org/pdf/2512.18746) and [Komi-learn](https://github.com/kurikomi-labs/komi-learn) do differently from a plain append log
 
 ---
@@ -165,289 +165,139 @@ Where `recency` is an exponential decay: `exp(-λ * hours_since_creation)`. Defa
 
 ---
 
-## 5. Hands-On Lab - Building `memory/store.py`
+## 5. Hands-On Lab - `memory/store.py` on agentkit
 
-This lab fills in the scaffold file at `/Users/yuxinliu/self-improving-agent-lab/memory/store.py`.
+This lab wires the scaffold file at `memory/store.py` to `agentkit.memory.MemoryStore` rather than building SQLite and vector-index plumbing from scratch.
+
+> [!info] In the lab: `agentkit.memory`
+> The lab's `memory/store.py` **subclasses** `agentkit.memory.MemoryStore`, adding the oMLX embedder (`OMLXEmbedder`) via constructor injection. The agent itself is wired in `scaffold/lab_agent.py` through `SelfImprovingAgent.from_config(..., embedder=OMLXEmbedder(), memory_path=...)`, and `run_agent(..., memory=store)` injects `.inject_context` into every prompt-building step automatically. You interact with `LabMemoryStore` exactly as you would with `MemoryStore` — the agentkit API is the surface.
 
 ### 5.1 Dependencies
 
 Add to `requirements.txt`:
 ```
-openai>=1.30
+agentkit>=0.1
 numpy>=1.26
-sqlite-utils>=3.36
-python-dateutil>=2.9
+openai>=1.30
 ```
 
-No FAISS required - numpy dot-product is fast enough for <100k entries on Apple Silicon.
+`agentkit` ships its own SQLite + numpy vector store — no FAISS, no `sqlite-utils` boilerplate required. Embeddings still call oMLX locally via the injected `OMLXEmbedder`.
 
 ### 5.2 The Store Module
 
 ```python
 # memory/store.py
 """
-MemoryStore: episodic, semantic, and procedural memory backed by SQLite + numpy vectors.
+Lab memory store: subclasses agentkit.memory.MemoryStore, wiring the oMLX embedder.
 Embeddings always use oMLX at http://localhost:8000/v1 - never VibeProxy (chat-only).
 """
 
 from __future__ import annotations
 
-import json
-import math
-import uuid
-from dataclasses import dataclass, field, asdict
-from datetime import datetime, timezone
 from pathlib import Path
-from typing import Literal, Optional
-
-import numpy as np
-import sqlite_utils
 from openai import OpenAI
+from agentkit import MemoryStore, MemoryEntry
 
 # ---------------------------------------------------------------------------
-# Embedding client - ALWAYS local oMLX regardless of generation backend
+# oMLX embedder - injected so agentkit never calls a remote endpoint
 # ---------------------------------------------------------------------------
-_EMB_CLIENT = OpenAI(base_url="http://localhost:8000/v1", api_key="not-needed")
-EMBED_MODEL = "nomic-embed-text"  # swap to any oMLX-served embedding model
-DB_PATH = Path(__file__).parent.parent / "memory" / "store.db"
 
-MemoryType = Literal["episodic", "semantic", "procedural"]
+class OMLXEmbedder:
+    """Embedder backed by the local oMLX server. Implements agentkit's Embedder protocol."""
 
+    _client = OpenAI(base_url="http://localhost:8000/v1", api_key="not-needed")
+    _model = "nomic-embed-text"
 
-def _embed(text: str) -> list[float]:
-    """Embed a string using the local oMLX embeddings endpoint."""
-    resp = _EMB_CLIENT.embeddings.create(model=EMBED_MODEL, input=text[:8192])
-    return resp.data[0].embedding
-
-
-def _cosine(a: list[float], b: list[float]) -> float:
-    va, vb = np.array(a), np.array(b)
-    denom = (np.linalg.norm(va) * np.linalg.norm(vb))
-    return float(np.dot(va, vb) / denom) if denom > 0 else 0.0
-
-
-def _recency(created_iso: str, decay_hours: float = 168.0) -> float:
-    """Exponential decay - full score now, ~0.37 at decay_hours."""
-    created = datetime.fromisoformat(created_iso).replace(tzinfo=timezone.utc)
-    now = datetime.now(timezone.utc)
-    hours = (now - created).total_seconds() / 3600
-    return math.exp(-hours / decay_hours)
+    def embed(self, texts: list[str]) -> list[list[float]]:
+        resp = self._client.embeddings.create(model=self._model, input=texts)
+        return [item.embedding for item in resp.data]
 
 
 # ---------------------------------------------------------------------------
-# Data model
+# Lab store - extends MemoryStore with the local embedder pre-wired
 # ---------------------------------------------------------------------------
 
-@dataclass
-class MemoryItem:
-    id: str
-    memory_type: MemoryType
-    content: str
-    metadata: dict
-    salience: float           # 0.0 - 1.0; set by caller or auto-inferred
-    created_at: str           # ISO-8601 UTC
-    last_accessed: str        # ISO-8601 UTC
-    embedding: list[float]
+class LabMemoryStore(MemoryStore):
+    """MemoryStore subclass that wires OMLXEmbedder automatically."""
 
-    def retrieval_score(
-        self,
-        query_vec: list[float],
-        alpha: float = 0.6,
-        beta: float = 0.2,
-        gamma: float = 0.2,
-    ) -> float:
-        sim = _cosine(query_vec, self.embedding)
-        rec = _recency(self.created_at)
-        return alpha * sim + beta * rec + gamma * self.salience
-
-
-# ---------------------------------------------------------------------------
-# SQLite persistence helpers
-# ---------------------------------------------------------------------------
-
-def _get_db() -> sqlite_utils.Database:
-    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    db = sqlite_utils.Database(DB_PATH)
-    if "memories" not in db.table_names():
-        db["memories"].create({
-            "id": str,
-            "memory_type": str,
-            "content": str,
-            "metadata": str,        # JSON
-            "salience": float,
-            "created_at": str,
-            "last_accessed": str,
-            "embedding": str,       # JSON list[float]
-        }, pk="id")
-        db["memories"].create_index(["memory_type"])
-    return db
-
-
-def _row_to_item(row: dict) -> MemoryItem:
-    return MemoryItem(
-        id=row["id"],
-        memory_type=row["memory_type"],
-        content=row["content"],
-        metadata=json.loads(row["metadata"]),
-        salience=row["salience"],
-        created_at=row["created_at"],
-        last_accessed=row["last_accessed"],
-        embedding=json.loads(row["embedding"]),
-    )
-
-
-# ---------------------------------------------------------------------------
-# Core store
-# ---------------------------------------------------------------------------
-
-class MemoryStore:
-    """Unified store for all three memory types."""
-
-    def __init__(self, db_path: Optional[Path] = None):
-        global DB_PATH
-        if db_path:
-            DB_PATH = db_path
-        self._db = _get_db()
-
-    # -- Write ----------------------------------------------------------------
-
-    def store(
-        self,
-        content: str,
-        memory_type: MemoryType,
-        metadata: Optional[dict] = None,
-        salience: float = 0.5,
-    ) -> MemoryItem:
-        """Embed content and persist a new MemoryItem. Returns the stored item."""
-        now = datetime.now(timezone.utc).isoformat()
-        embedding = _embed(content)
-        item = MemoryItem(
-            id=str(uuid.uuid4()),
-            memory_type=memory_type,
-            content=content,
-            metadata=metadata or {},
-            salience=max(0.0, min(1.0, salience)),
-            created_at=now,
-            last_accessed=now,
-            embedding=embedding,
-        )
-        self._db["memories"].insert({
-            "id": item.id,
-            "memory_type": item.memory_type,
-            "content": item.content,
-            "metadata": json.dumps(item.metadata),
-            "salience": item.salience,
-            "created_at": item.created_at,
-            "last_accessed": item.last_accessed,
-            "embedding": json.dumps(item.embedding),
-        })
-        return item
-
-    def record_trajectory(self, trajectory: dict, salience: float = 0.5) -> MemoryItem:
-        """Convenience: store a full agent trajectory dict as episodic memory."""
-        content = json.dumps(trajectory, ensure_ascii=False)[:4096]
-        return self.store(content, "episodic", metadata=trajectory.get("meta", {}), salience=salience)
-
-    def record_fact(self, fact: str, source_id: Optional[str] = None) -> MemoryItem:
-        """Store a distilled fact as semantic memory."""
-        meta = {"source_id": source_id} if source_id else {}
-        return self.store(fact, "semantic", metadata=meta, salience=0.7)
-
-    def record_skill(self, skill_name: str, description: str) -> MemoryItem:
-        """Store a skill pointer as procedural memory."""
-        content = f"SKILL: {skill_name}\n{description}"
-        return self.store(content, "procedural", metadata={"skill_name": skill_name}, salience=0.8)
-
-    # -- Read -----------------------------------------------------------------
-
-    def search(
-        self,
-        query: str,
-        k: int = 5,
-        memory_type: Optional[MemoryType] = None,
-        alpha: float = 0.6,
-        beta: float = 0.2,
-        gamma: float = 0.2,
-    ) -> list[MemoryItem]:
-        """Retrieve top-k memories by blended score (similarity + recency + salience)."""
-        query_vec = _embed(query)
-        where_clause = f"memory_type = '{memory_type}'" if memory_type else None
-        rows = list(self._db["memories"].rows_where(where_clause) if where_clause
-                    else self._db["memories"].rows)
-        if not rows:
-            return []
-        items = [_row_to_item(r) for r in rows]
-        scored = sorted(
-            items,
-            key=lambda m: m.retrieval_score(query_vec, alpha, beta, gamma),
-            reverse=True,
-        )
-        top = scored[:k]
-        # Update last_accessed
-        now = datetime.now(timezone.utc).isoformat()
-        for item in top:
-            self._db["memories"].update(item.id, {"last_accessed": now})
-        return top
-
-    def inject_context(self, query: str, k: int = 5) -> str:
-        """
-        Return a formatted memory context block ready to prepend to a system prompt.
-        Searches across all memory types and renders a readable summary.
-        """
-        results = self.search(query, k=k)
-        if not results:
-            return ""
-        lines = ["<memory_context>"]
-        for item in results:
-            tag = item.memory_type.upper()
-            lines.append(f"[{tag}] {item.content[:300]}")
-        lines.append("</memory_context>")
-        return "\n".join(lines)
-
-    def stats(self) -> dict:
-        db = self._db["memories"]
-        total = db.count
-        by_type = {t: db.count_where(f"memory_type = '{t}'")
-                   for t in ("episodic", "semantic", "procedural")}
-        return {"total": total, **by_type}
+    def __init__(self, db_path: str | Path = "memory/store.db"):
+        super().__init__(db_path=db_path, embedder=OMLXEmbedder())
 ```
 
-### 5.3 Wiring RECORD into the Agent Loop
+Key points on the agentkit API used here:
 
-The RECORD step belongs at the end of each task iteration in `agent/loop.py`:
+- `MemoryStore(db_path, embedder)` — SQLite persistence + numpy vector index, no external services.
+- The `embedder` receives a list of texts and returns `list[list[float]]` — `OMLXEmbedder.embed()` satisfies this.
+- `LabMemoryStore` adds nothing beyond wiring; all downstream code calls the standard `MemoryStore` methods.
+
+### 5.3 Writing and Searching Memories
 
 ```python
-# agent/loop.py  (excerpt - add after tool execution completes)
-from memory.store import MemoryStore
+# Episodic: record a task trajectory (RECORD step)
+entry_id = store.add(
+    memory_type="episodic",
+    text="Fixed test_auth_middleware: JWT expiry check was missing a timezone offset.",
+    source="task_loop/run_001",   # provenance tag — P34: evidence before belief
+    metadata={"outcome": "success", "salience": 0.6},
+)
 
-_memory = MemoryStore()
+# Semantic: distilled fact extracted during REFLECT
+store.add(
+    memory_type="semantic",
+    text="The auth middleware checks JWT expiry before role validation.",
+    source="reflect/code_review_001",  # P34: where this belief came from
+)
 
-def run_task(task: str, tools, client, model: str) -> dict:
-    """Run one task cycle and record the trajectory to memory."""
-    # ... existing ACT logic ...
-    trajectory = {
-        "task": task,
-        "steps": steps,          # list of tool calls + results
-        "final_answer": answer,
-        "outcome": outcome,       # "success" | "failure" | "partial"
-        "meta": {"model": model, "timestamp": datetime.utcnow().isoformat()},
-    }
-    # RECORD step - salience higher for failures (more to learn from)
-    salience = 0.8 if outcome == "failure" else 0.5
-    _memory.record_trajectory(trajectory, salience=salience)
+# Search (bumps access_count + last_used on every hit — P36 retention loop)
+results: list[MemoryEntry] = store.search("authentication middleware test failure", top_k=3)
+for entry in results:
+    print(f"[{entry.memory_type}] (seen {entry.access_count}x) {entry.text[:80]}")
+    print(f"  provenance: {entry.source}")  # P34: trace belief to its origin
 
-    # Inject relevant memory into next task's context
-    # (done at the TOP of the next run_task call, before constructing the prompt)
-    return trajectory
+# Count entries by type
+print(store.count())                  # total
+print(store.count(memory_type="episodic"))
 
-
-def build_system_prompt(task: str) -> str:
-    mem_ctx = _memory.inject_context(task, k=4)
-    base = "You are a coding agent. Solve the task using the provided tools."
-    return f"{mem_ctx}\n\n{base}" if mem_ctx else base
+# Evict coldest entries to bound the store (P36 retention)
+evicted = store.evict_coldest(keep=500)   # removes lowest access_count / oldest last_used
+print(f"Evicted {evicted} cold entries")
 ```
 
-### 5.4 Running the Lab
+The `.add()` `source` argument is the curriculum's **P34 evidence-before-belief** principle made concrete: every memory entry carries a provenance tag so the agent can trace where a belief came from. `MemoryEntry.source` surfaces it at read time.
+
+The `.search()` call increments `entry.access_count` and updates `entry.last_used` — these are the **P36 read/retention** signals that `evict_coldest` consults when pruning.
+
+### 5.4 Wiring RECORD and inject_context into the Agent Loop
+
+In the scaffold, `scaffold/lab_agent.py` handles wiring automatically via `run_agent(..., memory=store)`. For reference, the pattern it implements is:
+
+```python
+# scaffold/lab_agent.py  (simplified illustration — read the real file)
+from memory.store import LabMemoryStore
+
+store = LabMemoryStore(db_path="memory/store.db")
+
+def build_system_prompt(task: str) -> str:
+    # inject_context searches memory and returns a ready-to-prompt block;
+    # degrades to empty string on failure rather than breaking the loop
+    mem_ctx = store.inject_context(task, k=4)
+    base = "You are a coding agent. Solve the task using the provided tools."
+    return f"{mem_ctx}\n\n{base}" if mem_ctx else base
+
+def after_task(task: str, outcome: str, steps: list) -> None:
+    """RECORD step - called after every task cycle."""
+    import json
+    salience_flag = "failure" if outcome == "failure" else "success"
+    store.add(
+        memory_type="episodic",
+        text=json.dumps({"task": task, "outcome": outcome, "steps": steps})[:4096],
+        source=f"task_loop/{salience_flag}",
+    )
+```
+
+`.inject_context(query, k=4)` returns a formatted `<memory_context>` block (empty string on any error) — it is safe to call unconditionally before every ACT step.
+
+### 5.5 Running the Lab
 
 ```bash
 # Start oMLX (pull an embedding model first in the menu-bar app)
@@ -455,27 +305,25 @@ def build_system_prompt(task: str) -> str:
 
 cd /Users/yuxinliu/self-improving-agent-lab
 python - <<'EOF'
-from memory.store import MemoryStore
+from memory.store import LabMemoryStore
 
-ms = MemoryStore()
+store = LabMemoryStore()
 
-# Store a few items across all three types
-ms.record_trajectory({
-    "task": "Fix failing test_auth_middleware",
-    "outcome": "success",
-    "steps": [{"tool": "run_tests", "result": "3 failures"}, {"tool": "patch_file", "result": "patched"}],
-    "meta": {}
-}, salience=0.6)
+# Write entries across memory types
+store.add("episodic", "Fixed test_auth_middleware: 3 failures patched.", source="task_loop/run_001")
+store.add("semantic", "The auth middleware checks JWT expiry before role validation.", source="reflect/001")
+store.add("procedural", "SKILL: run_migrations\ncd project && alembic upgrade head", source="skill_lib")
 
-ms.record_fact("The auth middleware checks JWT expiry before role validation.", source_id="code_review_001")
-ms.record_skill("run_migrations", "cd project && alembic upgrade head; verify with alembic current")
+# Retrieve - bumps access_count/last_used on each hit
+results = store.search("authentication middleware test failure", top_k=3)
+for e in results:
+    print(f"[{e.memory_type}] (hits={e.access_count}) src={e.source} | {e.text[:80]}")
 
-# Retrieve
-results = ms.search("authentication middleware test failure", k=3)
-for r in results:
-    print(f"[{r.memory_type}] score≈... | {r.content[:80]}")
+# Bound the store
+evicted = store.evict_coldest(keep=100)
+print(f"Evicted {evicted} cold entries; total now: {store.count()}")
 
-print(ms.stats())
+store.close()
 EOF
 ```
 
@@ -509,13 +357,13 @@ The broader [agent-memory direction](https://arxiv.org/pdf/2512.18746) in 2025-2
 ## 7. Pitfalls
 
 > [!danger] Never route embeddings through VibeProxy
-> VibeProxy exposes chat completion only - it has no `/v1/embeddings` endpoint. If you accidentally point the embedding client at `http://localhost:8317`, every `store()` call will raise a connection error. The embedding client is hardcoded to `http://localhost:8000/v1` intentionally. Keep it that way.
+> VibeProxy exposes chat completion only - it has no `/v1/embeddings` endpoint. `OMLXEmbedder` points at `http://localhost:8000/v1` intentionally. If you accidentally pass a VibeProxy-backed embedder to `MemoryStore`, every `.add()` call will raise a connection error. The embedder is injected — keep `OMLXEmbedder` as the injected type.
 
 > [!warning] Storing secrets in memory
-> If a trajectory includes API keys, tokens, or passwords surfaced by a tool call, those values will be embedded and persisted in SQLite. Always redact secrets from trajectory dicts before calling `record_trajectory`. See [[09 - Sandboxing and Safe Execution]] for the broader sanitization pattern.
+> If a trajectory includes API keys, tokens, or passwords surfaced by a tool call, those values will be embedded and persisted in SQLite by `store.add()`. Always redact secrets from the `text` argument before calling `.add()`. See [[09 - Sandboxing and Safe Execution]] for the broader sanitization pattern.
 
 > [!warning] Embedding model mismatch
-> All vectors in `store.db` must come from the same model. If you switch from `nomic-embed-text` to a different model, the cosine similarities between old and new vectors are meaningless. Either clear the database or maintain separate indices per model version. Store the model name in the item's `metadata` for future detection.
+> All vectors in `store.db` must come from the same model. If you swap `OMLXEmbedder._model` from `nomic-embed-text` to a different model, cosine similarities between old and new vectors are meaningless. Either clear the database or maintain separate `db_path` values per model version. Store the model name in the `.add()` `metadata` argument for future detection.
 
 > [!tip] Salience tuning heuristics
 > - Failures: 0.8 - 0.9 (most to learn from)
@@ -532,11 +380,11 @@ The broader [agent-memory direction](https://arxiv.org/pdf/2512.18746) in 2025-2
 ## 8. Checkpoint
 
 > [!question] Checkpoint
-> 1. An agent just successfully fixed a bug by reading a stack trace and patching a file. Which memory type should the final trajectory be stored as, and what salience score would you assign?
-> 2. Why does `memory/store.py` hardcode `http://localhost:8000/v1` for embeddings instead of reading `AGENT_BACKEND` from the environment?
-> 3. You have 50,000 episodic items in `store.db` and retrieval quality has dropped. What does [MemEvolve](https://arxiv.org/pdf/2512.18746) suggest, and what is the simplest change you could make to `MemoryStore.store()` to slow the degradation?
-> 4. A teammate switches the oMLX embedding model from `nomic-embed-text` to `mxbai-embed-large`. They run `memory/store.py` on new tasks without clearing the database. What will go wrong, and how would you detect it?
-> 5. Describe the retrieval score formula and explain what would happen to older-but-highly-relevant memories if you set `beta = 0.0`.
+> 1. An agent just successfully fixed a bug by reading a stack trace and patching a file. Which `memory_type` string should you pass to `store.add()`, and what `source` tag would you choose to satisfy P34 provenance?
+> 2. Why does `OMLXEmbedder` hardcode `http://localhost:8000/v1` instead of reading `AGENT_BACKEND` from the environment, even when generation is routed through VibeProxy?
+> 3. You have 50,000 episodic entries in `store.db` and retrieval quality has dropped. What does [MemEvolve](https://arxiv.org/pdf/2512.18746) suggest, and how would you use `store.evict_coldest(keep=...)` to slow the degradation?
+> 4. A teammate switches `OMLXEmbedder._model` from `nomic-embed-text` to `mxbai-embed-large` without clearing the database. What will go wrong with `store.search()` results, and how would you detect it using `MemoryEntry.metadata`?
+> 5. `MemoryEntry` carries `access_count` and `last_used`. Explain how these fields connect P36 (read/retention loop) to `evict_coldest`, and what would be lost if you evicted by creation time alone.
 
 ---
 

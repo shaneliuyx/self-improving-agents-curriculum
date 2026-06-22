@@ -248,35 +248,79 @@ def dispatch(tool_name: str, tool_args: dict) -> str:
 
 ## 5 · The Full Minimal Loop
 
-This is `agent/loop.py` - the core of the scaffold. It is intentionally short. Later modules extend it by wrapping or subclassing, not by modifying this file.
+The loop is built on **agentkit** — a thin, production-shaped library that provides the ReAct cycle, tool dispatch, and trajectory capture so the scaffold code stays focused on wiring, not re-implementing the wheel.
+
+> [!info] In the lab: `agentkit.agent`
+> The lab's `agent/loop.py` is a thin wrapper that wires the oMLX/VibeProxy client and the tools dict, then delegates to `agentkit.run_agent`. The whole agent is composed in `scaffold/lab_agent.py` as `agentkit.SelfImprovingAgent.from_config(cfg, backend=OMLXClient(), embedder=OMLXEmbedder(), memory_path=...)`. You do not need to hand-roll the iteration loop — agentkit owns it.
+>
+> Install: `pip install "git+https://github.com/shaneliuyx/agentkit"` or from source `pip install -e path/to/agentkit`.
+
+### The agentkit API (what the loop uses)
+
+```python
+from agentkit import run_agent, run_role, AgentResult, RESEARCHER, REVIEWER
+```
+
+`run_agent` is the core entry point:
+
+```python
+result: AgentResult = run_agent(
+    task,                  # str — the user task
+    client,                # LLMClient — injected backend (oMLX or VibeProxy adapter)
+    tools=TOOL_REGISTRY,   # dict[str, handler] or ToolRegistry
+    system_prompt=SYSTEM_PROMPT,
+    max_rounds=MAX_ROUNDS,
+    memory=None,           # optional MemoryStore (wired in module 04)
+)
+```
+
+`AgentResult` fields you will use throughout the curriculum:
+
+| Field | Type | Meaning |
+|---|---|---|
+| `.answer` | `str` | The agent's final answer text |
+| `.trajectory` | `list[TrajectoryStep]` | Every (action, observation) pair — the RECORD/REFLECT seam |
+| `.stop_reason` | `str` | `"answer"` \| `"max_rounds"` \| `"error"` \| `"interrupted"` |
+| `.rounds_used` | `int` | How many tool-call rounds were consumed |
+| `.success` | `bool` | `True` when `stop_reason == "answer"` |
+
+`run_role` is a convenience wrapper when you want a preconfigured system prompt:
+
+```python
+result = run_role(RESEARCHER, task, client, tools=TOOL_REGISTRY, max_rounds=10)
+```
+
+Presets — `RESEARCHER`, `REVIEWER`, `WRITER`, `VERIFIER` — each supply a role-specific system prompt. Used in later modules; mentioned here so the API surface is clear.
+
+### What `agent/loop.py` looks like in the lab
+
+The lab keeps a thin `agent/loop.py` that wires the oMLX client and the tool registry, then delegates entirely to agentkit:
 
 ```python
 # agent/loop.py
 """
-Minimal ReAct agent loop.
+Minimal ReAct agent loop — delegates to agentkit.run_agent.
 
 Usage:
-    AGENT_BACKEND=omlx     python -m agent.loop
+    AGENT_BACKEND=omlx      python -m agent.loop
     AGENT_BACKEND=vibeproxy python -m agent.loop
 
 Environment:
     AGENT_BACKEND  - "omlx" or "vibeproxy" (default: omlx)
     OMLX_MODEL     - model name served by oMLX (default: qwen2.5-coder-7b)
     VIBE_MODEL     - model name for VibeProxy (default: claude-sonnet-4-5-20250929)
-    MAX_ITERATIONS - hard cap on tool-call rounds (default: 10)
+    MAX_ROUNDS     - hard cap on tool-call rounds (default: 10)
 """
 
-import json
 import os
 import sys
-from datetime import datetime, timezone
-from typing import Any
 
+from agentkit import run_agent, AgentResult
 from backends.adapter import make_client
-from agent.tools import TOOLS, dispatch
+from agent.tools import TOOL_REGISTRY   # dict[str, handler]
 
 
-MAX_ITERATIONS = int(os.getenv("MAX_ITERATIONS", "10"))
+MAX_ROUNDS = int(os.getenv("MAX_ROUNDS", "10"))
 
 SYSTEM_PROMPT = """\
 You are a precise, tool-using assistant. You have access to tools described in the tools list.
@@ -290,129 +334,42 @@ Rules:
 """
 
 
-def build_tool_result_message(tool_call_id: str, content: str) -> dict:
-    return {
-        "role": "tool",
-        "tool_call_id": tool_call_id,
-        "content": content,
-    }
-
-
-def run_agent(task: str, verbose: bool = True) -> list[dict[str, Any]]:
+def loop(task: str, verbose: bool = True) -> AgentResult:
     """
     Run the minimal agent loop for a given task.
 
-    Returns the full trajectory as a list of message dicts.
-    This list is the primary artifact for RECORD and REFLECT.
+    Returns an AgentResult whose .trajectory is the primary artifact
+    for RECORD (module 04) and REFLECT (module 05).
     """
-    client, model = make_client()
+    client, _model = make_client()
 
-    messages: list[dict[str, Any]] = [
-        {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user", "content": task},
-    ]
+    result: AgentResult = run_agent(
+        task,
+        client,
+        tools=TOOL_REGISTRY,
+        system_prompt=SYSTEM_PROMPT,
+        max_rounds=MAX_ROUNDS,
+    )
 
-    trajectory_meta = {
-        "task": task,
-        "model": model,
-        "backend": os.getenv("AGENT_BACKEND", "omlx"),
-        "started_at": datetime.now(timezone.utc).isoformat(),
-        "iterations": 0,
-        "stop_reason": None,
-    }
+    if verbose:
+        print(f"\nStop reason : {result.stop_reason}")
+        print(f"Rounds used : {result.rounds_used}")
+        print(f"Answer      : {result.answer}")
 
-    for iteration in range(MAX_ITERATIONS):
-        trajectory_meta["iterations"] = iteration + 1
-
-        if verbose:
-            print(f"\n--- Iteration {iteration + 1} ---")
-
-        response = client.chat.completions.create(
-            model=model,
-            messages=messages,
-            tools=TOOLS,
-            tool_choice="auto",
-            temperature=0.2,
-        )
-
-        assistant_message = response.choices[0].message
-
-        # Convert to a serialisable dict for the trajectory
-        assistant_dict: dict[str, Any] = {
-            "role": "assistant",
-            "content": assistant_message.content or "",
-        }
-
-        tool_calls = assistant_message.tool_calls
-        if tool_calls:
-            assistant_dict["tool_calls"] = [
-                {
-                    "id": tc.id,
-                    "type": "function",
-                    "function": {
-                        "name": tc.function.name,
-                        "arguments": tc.function.arguments,
-                    },
-                }
-                for tc in tool_calls
-            ]
-
-        messages.append(assistant_dict)
-
-        # --- STOP CONDITION: no tool calls means a final answer ---
-        if not tool_calls:
-            trajectory_meta["stop_reason"] = "final_answer"
-            if verbose:
-                print(f"Final answer: {assistant_message.content}")
-            break
-
-        # --- Dispatch each tool call ---
-        for tc in tool_calls:
-            tool_name = tc.function.name
-            try:
-                tool_args = json.loads(tc.function.arguments)
-            except json.JSONDecodeError:
-                tool_args = {}
-
-            if verbose:
-                print(f"  Tool: {tool_name}({tool_args})")
-
-            result = dispatch(tool_name, tool_args)
-
-            if verbose:
-                print(f"  Result: {result[:120]}{'...' if len(result) > 120 else ''}")
-
-            messages.append(build_tool_result_message(tc.id, result))
-
-    else:
-        # Loop exhausted MAX_ITERATIONS
-        trajectory_meta["stop_reason"] = "max_iterations"
-        if verbose:
-            print(f"[Warning] Reached MAX_ITERATIONS ({MAX_ITERATIONS}). Stopping.")
-
-    trajectory_meta["finished_at"] = datetime.now(timezone.utc).isoformat()
-
-    # ---------------------------------------------------------------
-    # RECORD SEAM: attach metadata to the first message for downstream
-    # consumers (memory/store.py, reflection/reflect.py, evals/run.py).
-    # Later modules read trajectory[0]["_meta"] to index the run.
-    # ---------------------------------------------------------------
-    messages[0]["_meta"] = trajectory_meta
-
-    return messages
+    return result
 
 
 # --- CLI entry point ---
 if __name__ == "__main__":
     task = " ".join(sys.argv[1:]) or "What is 17 * 23? Show your working."
-    trajectory = run_agent(task)
+    result = loop(task)
     print("\n=== Trajectory summary ===")
-    print(f"Turns : {len(trajectory)}")
-    print(f"Meta  : {trajectory[0].get('_meta')}")
+    print(f"Steps   : {len(result.trajectory)}")
+    print(f"Success : {result.success}")
 ```
 
-> [!note] The `_meta` field is the RECORD seam
-> `messages[0]["_meta"]` is a deliberate convention. When [[04 - Memory Systems]] introduces `memory/store.py`, it reads this field to index runs by task, model, backend, and outcome. When [[10 - Evaluation Harness]] compares runs, it reads `stop_reason` and `iterations` from this dict. Do not rename it.
+> [!note] `AgentResult.trajectory` is the RECORD seam
+> `result.trajectory` is the list of `TrajectoryStep` objects agentkit accumulates across all rounds. When [[04 - Memory Systems]] introduces `memory/store.py`, it reads this field to index runs by task, model, backend, and outcome. When [[10 - Evaluation Harness]] compares runs, it reads `result.stop_reason` and `result.rounds_used`. The `_meta` dict from the hand-rolled version is superseded — downstream consumers should read `AgentResult` fields directly.
 
 ---
 
@@ -435,7 +392,7 @@ Copy `.env.example` to `.env` and confirm:
 ```
 AGENT_BACKEND=omlx
 OMLX_MODEL=qwen2.5-coder-7b
-MAX_ITERATIONS=10
+MAX_ROUNDS=10
 ```
 
 ### Step 1 - Run a simple arithmetic task
@@ -444,7 +401,7 @@ MAX_ITERATIONS=10
 AGENT_BACKEND=omlx python -m agent.loop "What is the square root of 144 plus 7?"
 ```
 
-Expected flow: the agent calls `calculator` once, gets `12.0 + 7 = 19.0`, then returns a final answer. You should see exactly two iterations logged (one tool call, one final answer).
+Expected flow: the agent calls `calculator` once, gets `12.0 + 7 = 19.0`, then returns a final answer. You should see `stop_reason: answer` and `rounds_used: 1` logged.
 
 ### Step 2 - Run the same task on VibeProxy
 
@@ -452,7 +409,7 @@ Expected flow: the agent calls `calculator` once, gets `12.0 + 7 = 19.0`, then r
 AGENT_BACKEND=vibeproxy python -m agent.loop "What is the square root of 144 plus 7?"
 ```
 
-The output should be semantically identical. The only difference is the model name in the trajectory meta. This is the point of the unified adapter - backends are interchangeable for the loop.
+The output should be semantically identical. The only difference is the model wired into the injected client. This is the point of the unified adapter - backends are interchangeable for the loop.
 
 > [!warning] VibeProxy ToS note
 > Routing your Claude subscription through VibeProxy may violate Anthropic's Terms of Service. Use it for personal development only - do not build commercial products on top of it.
@@ -463,20 +420,18 @@ Add a small script to pretty-print the trajectory:
 
 ```python
 # scripts/show_trajectory.py
-import json
 import sys
-from agent.loop import run_agent
+from agent.loop import loop
 
 task = " ".join(sys.argv[1:]) or "Read the file GOAL.md and summarise it in one sentence."
-traj = run_agent(task, verbose=False)
+result = loop(task, verbose=False)
 
-for i, msg in enumerate(traj):
-    role = msg.get("role", "?")
-    content = str(msg.get("content", ""))[:200]
-    meta = msg.get("_meta", {})
-    print(f"[{i}] {role}: {content}")
-    if meta:
-        print(f"     META: {json.dumps(meta, indent=2)}")
+print(f"stop_reason : {result.stop_reason}")
+print(f"rounds_used : {result.rounds_used}")
+print(f"answer      : {result.answer}")
+print(f"\nTrajectory ({len(result.trajectory)} steps):")
+for i, step in enumerate(result.trajectory):
+    print(f"  [{i}] {step}")
 ```
 
 Run it:
@@ -485,7 +440,7 @@ Run it:
 python scripts/show_trajectory.py "What is 6 * 7?"
 ```
 
-You will see every message the agent exchanged with the LLM - system, user, assistant (with tool_calls), tool results, and the final assistant turn. This is the trajectory structure that [[04 - Memory Systems]] will persist.
+You will see every `TrajectoryStep` agentkit accumulated — each (action, observation) pair. The `result.stop_reason` and `result.rounds_used` fields are what [[04 - Memory Systems]] will index when persisting this run.
 
 ### Step 4 - Observe the stop condition
 
@@ -495,24 +450,24 @@ Try a task that requires no tools:
 python -m agent.loop "What is the capital of France? Answer directly without using any tools."
 ```
 
-The agent should emit a final answer on iteration 1 with no tool calls. This confirms that `tool_calls is None` is correctly handled as the stop condition.
+The agent should emit a final answer in round 1 with no tool calls. You should see `stop_reason: answer` and `rounds_used: 1`. This confirms that agentkit's stop condition fires correctly when the model skips tools entirely.
 
-### Step 5 - Stress the iteration cap
+### Step 5 - Stress the round cap
 
 ```bash
-MAX_ITERATIONS=3 python -m agent.loop "Search for 'self-improving agents', then search for 'ReAct paper', then search for 'tool use survey', then give me a combined summary."
+MAX_ROUNDS=3 python -m agent.loop "Search for 'self-improving agents', then search for 'ReAct paper', then search for 'tool use survey', then give me a combined summary."
 ```
 
-With `MAX_ITERATIONS=3` and three required searches, the loop will exhaust iterations and report `stop_reason: max_iterations`. This is the failure mode [[05 - Reflection and Self-Correction]] addresses by teaching the agent to plan more efficiently before acting.
+With `MAX_ROUNDS=3` and three required searches, the loop will exhaust rounds and report `stop_reason: max_rounds`. This is the failure mode [[05 - Reflection and Self-Correction]] addresses by teaching the agent to plan more efficiently before acting.
 
 ---
 
 ## 7 · Trajectory Capture as an Architectural Seam
 
-The trajectory list is not just a log - it is the primary interface between modules:
+`AgentResult.trajectory` is not just a log - it is the primary interface between modules:
 
 ```
-agent/loop.py  -->  messages list (trajectory)
+agent/loop.py  -->  AgentResult.trajectory  (list[TrajectoryStep])
                          |
           ┌──────────────┼──────────────────┐
           v              v                  v
@@ -520,24 +475,16 @@ agent/loop.py  -->  messages list (trajectory)
   (RECORD step)     (REFLECT step)          (VERIFY step)
 ```
 
-Every downstream module takes a trajectory as input and returns either a stored artifact (memory), a critique (reflection), or a score (eval). The loop itself never changes - only the consumers grow. This is the "open/closed" principle applied to agent architecture: the loop is closed for modification, open for extension.
+Every downstream module takes the trajectory as input and returns either a stored artifact (memory), a critique (reflection), or a score (eval). The loop itself never changes - only the consumers grow. This is the "open/closed" principle applied to agent architecture: the loop is closed for modification, open for extension.
 
-> [!example] What a trajectory entry looks like
-> ```json
-> {
->   "role": "assistant",
->   "content": "",
->   "tool_calls": [{
->     "id": "call_abc123",
->     "type": "function",
->     "function": {
->       "name": "calculator",
->       "arguments": "{\"expression\": \"sqrt(144) + 7\"}"
->     }
->   }]
-> }
+> [!example] What a TrajectoryStep looks like
+> Each `TrajectoryStep` in `result.trajectory` captures one (action, observation) pair:
+> ```python
+> step.action    # the tool call the agent chose: name + arguments
+> step.observation  # the string result returned by the tool
+> step.round     # which round this occurred in (1-indexed)
 > ```
-> The `tool_calls` field is what the reflection module reads to understand *what the agent chose to do*. The downstream tool_result message records *what happened*. Together they form a (action, observation) pair - the atom of ReAct reasoning.
+> The `action` field is what the reflection module reads to understand *what the agent chose to do*. The `observation` field records *what happened*. Together they form the atom of ReAct reasoning - the same concept as the message pairs in the old messages list, now surfaced through a typed interface.
 
 ---
 
@@ -555,22 +502,22 @@ On oMLX or VibeProxy, the constraint is different: you are rate-limited by local
 ## 9 · Common Pitfalls
 
 > [!danger] Pitfall: forgetting the tool_call_id in tool results
-> The OpenAI tool-use format requires every `role: tool` message to include the `tool_call_id` that matches the assistant's request. If you omit it, the API returns a 400 error or the model becomes confused. See `build_tool_result_message` above - always pass the id through.
+> The OpenAI tool-use format requires every `role: tool` message to include the `tool_call_id` that matches the assistant's request. If you omit it, the API returns a 400 error or the model becomes confused. agentkit handles this internally; the pitfall re-surfaces if you ever bypass `run_agent` and assemble messages manually.
 
 > [!danger] Pitfall: bare eval() in tool implementations
 > The `calculator` tool uses `eval()` with a restricted namespace. Never use bare `eval(user_input)` in a tool - it is a code-injection vector. If you expose the agent to untrusted tasks, use a proper expression parser (e.g., `asteval`, `sympy.parsing.sympy_parser`).
 
 > [!warning] Pitfall: mutable default arguments in message lists
-> A common Python bug: `def run_agent(messages=[])`. Python creates one list object at import time. Use `messages: list | None = None` and initialize inside the function. The loop above does this correctly with `messages = [system, user]` inside `run_agent`.
+> A common Python bug: `def run_agent(messages=[])`. Python creates one list object at import time. Use `messages: list | None = None` and initialize inside the function. agentkit's `run_agent` does this correctly internally; the pitfall applies to any hand-rolled helpers you write around it.
 
 > [!warning] Pitfall: treating the baseline as permanent
 > The baseline loop is NOT the target architecture - it is the measurement instrument. Do not add memory, reflection, or self-modification to `agent/loop.py`. Those belong in the modules that wrap or consume it. Mixing them in makes it impossible to isolate which change caused a performance difference.
 
 > [!note] Pitfall: no stop condition beyond tool_calls
-> What happens if the model returns `tool_calls=[]` but also returns empty `content`? This can happen with some local models that are not well-tuned for tool use. Add a check: if both `tool_calls` and `content` are empty/None, treat it as an error turn and break the loop rather than looping forever.
+> What happens if the model returns `tool_calls=[]` but also returns empty `content`? This can happen with some local models that are not well-tuned for tool use. agentkit detects this and sets `stop_reason = "error"` rather than looping forever. Check `result.stop_reason` after every `run_agent` call.
 
 > [!warning] Pitfall (verified on oMLX): small local models emit tool calls as TEXT
-> Models like `Qwen2.5-Coder-7B` served by oMLX often do **not** return the structured `tool_calls` field - the call comes back inside `content` as text, e.g. `<tools>{"name": "calculator", "arguments": {"expression": "17 * 23 + 5"}}</tools>`. A loop that only checks `message.tool_calls` treats that as the final answer and never runs the tool. `agent/loop.py` therefore includes a `_parse_text_tool_calls()` fallback that detects `<tools>` / `<tool_call>` / fenced-JSON / bare-JSON calls, executes them via `dispatch_tool`, and feeds the observation back as a user turn. Verified live 2026-05-31: tool use now returns `396` on **both** oMLX (text fallback) and VibeProxy/Claude (native `tool_calls`).
+> Models like `Qwen2.5-Coder-7B` served by oMLX often do **not** return the structured `tool_calls` field - the call comes back inside `content` as text, e.g. `<tools>{"name": "calculator", "arguments": {"expression": "17 * 23 + 5"}}</tools>`. A loop that only checks `message.tool_calls` treats that as the final answer and never runs the tool. This fallback parsing lives in the lab's **adapter layer** (`backends/adapter.py`), not in agentkit itself. Verified live 2026-05-31: tool use now returns `396` on **both** oMLX (text fallback in adapter) and VibeProxy/Claude (native `tool_calls`).
 
 ---
 
@@ -590,7 +537,7 @@ The [Darwin Godel Machine paper](https://arxiv.org/abs/2505.22954) shows that ev
 > 1. Why must you establish a baseline before attempting any self-improvement? What goes wrong if you skip this step?
 > 2. What is the role of `tool_call_id` in the OpenAI tool-use message format, and what error occurs if you omit it?
 > 3. Trace through the sequence diagram in section 3.2: after iteration 2, the messages list has how many entries? List them in order by role.
-> 4. What is the `_meta` field attached to `messages[0]`, and which future modules read it?
+> 4. `AgentResult` has five fields: `.answer`, `.trajectory`, `.stop_reason`, `.rounds_used`, `.success`. Which field does [[04 - Memory Systems]] use to index runs, and which does [[10 - Evaluation Harness]] use to detect regression?
 > 5. On a local backend (oMLX or VibeProxy), what is the primary resource constraint on loop iterations? How does this differ from a paid API?
 
 ---

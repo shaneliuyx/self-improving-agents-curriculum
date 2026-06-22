@@ -198,78 +198,79 @@ The adapter swaps `base_url` automatically. No other change is needed. The gener
 
 ### 3.4 - The core orchestration: the improvement cycle
 
-This is the integration point that wires the subsystems together. It is the distilled logic of `scripts/go` (the real driver) - and unlike a sketch, **every import and call below resolves against the scaffold's actual API**. Note the shape: the scaffold is *functional* (`propose_skill()`, `save_skill()`, `run_evals()`), and `verify()` is a pure gate you feed scores into - it decides keep/discard, it does not compute the scores itself.
+The capstone agent IS `agentkit.SelfImprovingAgent`. The canonical composition lives in **`scaffold/lab_agent.py`** - that is the source of truth for this capstone. The snippet below is an accurate reading of that file.
+
+> [!info] In the lab: the capstone IS `agentkit.SelfImprovingAgent`
+> `scaffold/lab_agent.py` wires `from_config` → `run` → gated `improve` (which rewrites the chosen role file on disk on ACCEPT) → `skills` / `forge_tool`. Each subsystem you built chapter-by-chapter — agent loop, memory, evolve, skills, gates, sandbox — is the matching `agentkit.<module>` underneath. You do not hand-roll the orchestration; you compose it through the agentkit facade and inject your oMLX adapters.
 
 ```python
-# The end-to-end ACT -> RECORD -> REFLECT -> LEARN -> VERIFY -> COMMIT cycle,
-# distilled from scripts/go. Run it with `./scripts/go`.
-from agent.loop import run_agent
-from memory.store import MemoryStore
-from reflection.reflect import reflect_on_trajectory
-from skills.library import propose_skill, save_skill, list_skills
-from evals.run import run_evals
-from verification.gates import verify, VerdictStatus
+# scaffold/lab_agent.py - canonical capstone composition
+# Install: pip install "git+https://github.com/shaneliuyx/agentkit"
+from pathlib import Path
+from agentkit import SelfImprovingAgent
+from backends.adapter import OMLXClient      # agentkit LLMClient over oMLX
+from memory.store import OMLXEmbedder        # agentkit Embedder over oMLX
+from config import settings
 
+cfg = Path("config")   # config/roles/ + config/skills/ live here
 
-def run_improvement_cycle(task: str, backend: str | None = None) -> dict:
-    memory = MemoryStore()                       # SQLite + oMLX embeddings
+# Compose the full agent: roles loaded from config/roles/ (agentkit ships
+# sensible defaults if the directory is absent), embeddings via local oMLX,
+# trajectory memory persisted to SQLite at memory_path.
+agent = SelfImprovingAgent.from_config(
+    cfg,
+    backend=OMLXClient(),
+    embedder=OMLXEmbedder(),
+    memory_path=settings.memory_db_path,
+)
 
-    # --- ACT (past lessons are injected into the prompt via memory=) ---
-    result = run_agent(task, backend=backend, memory=memory, log=True)
-    print(f"[ACT] success={result.success} stop={result.stop_reason} rounds={result.rounds_used}")
+# --- ACT + RECORD + REFLECT: one call drives the full config-directed role loop ---
+result = agent.run(task, max_rounds=settings.max_rounds)
+print(f"[ACT] success={result.success} stop={result.stop_reason} rounds={result.rounds_used}")
+print(f"[ACT] answer={result.answer!r}")
+# result.trajectory holds every step - same audit trail as the hand-rolled loop
 
-    # --- RECORD (persist the trajectory shape for replay/audit) ---
-    memory.record_trajectory({
-        "task": result.task, "answer": result.answer,
-        "success": result.success, "steps": len(result.trajectory),
-    })
-    print(f"[RECORD] trajectory of {len(result.trajectory)} steps stored")
+# --- LEARN + VERIFY + COMMIT: gated prompt evolution ---
+# eval_set maps evals/tasks.py entries to (task, expected) pairs - lab glue,
+# not an agentkit method (lab_eval_set() in scaffold/lab_agent.py does this mapping).
+eval_set = lab_eval_set()   # returns list[tuple[str, str]]
+opt = agent.improve(
+    eval_set,
+    role="solver",          # which role file to evolve
+    epochs=3,
+    min_delta=settings.evolve_min_delta,  # default 0.05
+)
+print(f"[IMPROVE] delta={opt.delta:+.4f} best={opt.best!r}")
+# On ACCEPT, agentkit rewrites config/roles/solver.yaml on disk.
+# Review the change as a git diff before scripts/commit runs.
 
-    # --- REFLECT (structured lessons -> memory; the read side of the NEXT act) ---
-    lessons = reflect_on_trajectory(result, store=memory)
-    print(f"[REFLECT] heuristic={lessons.heuristic[:60]!r} conf={lessons.confidence}")
-
-    # --- LEARN (propose a reusable skill from the trajectory) ---
-    summary = f"Task: {result.task}\nAnswer: {result.answer}"
-    skill = propose_skill(summary, source_task=task)
-    if skill is None:
-        return {"committed": False, "reason": "no skill proposed"}
-    print(f"[LEARN] candidate skill {skill.name!r}")
-
-    # --- VERIFY (min_delta defaults to settings.evolve_min_delta; the always-on
-    #     containment gate from section 4.4 runs UNCONDITIONALLY; run_safety_check
-    #     defaults True so the LLM safety gate also runs) ---
-    baseline = run_evals(backend=backend).score
-    candidate = baseline + (0.1 if result.success else 0.0)   # prod re-scores the suite with the candidate applied
-    verdict = verify(
-        proposal={"type": "skill", "name": skill.name, "content": skill.description},
-        candidate_score=candidate,
-        baseline_score=baseline,
-    )
-    print(f"[VERIFY] {verdict.status.value.upper()} (delta={verdict.delta:+.4f}) - {verdict.reason}")
-
-    if verdict.status is not VerdictStatus.ACCEPT:
-        return {"committed": False, "delta": verdict.delta, "reason": verdict.reason}
-
-    # --- COMMIT (persist the skill; scripts/commit wraps git so it stays revertible) ---
-    skill.eval_score = verdict.score
-    path = save_skill(skill)
-    print(f"[COMMIT] saved {skill.name!r} -> {path.name}; library now {list_skills()}")
-    return {"committed": True, "delta": verdict.delta, "skill": skill.name}
+# --- SKILLS: retrieve past lessons; forge a new tool if needed ---
+relevant = agent.skills.retrieve("retry on rate limit", k=3)
+new_tool  = agent.forge_tool("parse malformed JSON from tool responses")
 ```
+
+The shape here is different from a hand-rolled composition in one important way: `agent.run(task)` handles ACT, RECORD, and REFLECT internally via config-directed role dispatch. `agent.improve(eval_set, ...)` handles the full LEARN → VERIFY → COMMIT gating and rewrites the role file itself. You interact with the seams (role config, eval set, min_delta), not the internals.
+
+**Lab glue** - one piece has no agentkit method and is intentionally left as lab code: `lab_eval_set()` maps `evals/tasks.py` entries (which hold task strings and ground-truth answers) into agentkit's `list[tuple[str, str]]` format. This is a one-function adapter (~10 lines); it lives in `scaffold/lab_agent.py` alongside the composition above.
 
 ### 3.5 - Human-in-the-loop gate
 
 The `HUMAN_IN_LOOP=true` flag inserts a confirmation step before `scripts/commit` runs. This is the single intervention that [community consensus](https://www.reddit.com/r/AI_Agents/comments/1taei9m/stop_building_ai_agents/) identifies as saving "90% of the headache."
 
+With agentkit, the gate sits between `agent.improve(...)` returning an `OptimizeResult` and `scripts/commit` running. After `improve` returns, inspect the result and gate on user confirmation before committing the rewritten role file:
+
 ```python
-# In run_improvement_cycle, immediately before the COMMIT block:
+# In scaffold/lab_agent.py, after agent.improve() returns:
 import os
+opt = agent.improve(eval_set, role="solver", epochs=3, min_delta=settings.evolve_min_delta)
 if os.getenv("HUMAN_IN_LOOP", "true").lower() == "true":
-    print(f"\n[HUMAN-IN-LOOP] skill={skill.name!r}  delta={verdict.delta:+.4f}")
-    print(f"Steps preview: {skill.steps[:3]}")
+    print(f"\n[HUMAN-IN-LOOP] delta={opt.delta:+.4f}  best={opt.best!r}")
+    print("Review: git diff config/roles/solver.yaml")
     if input("Accept and commit? [y/N] ").strip().lower() != "y":
-        return {"committed": False, "reason": "human rejected"}
+        # agentkit already wrote the candidate; revert the role file
+        import subprocess
+        subprocess.run(["git", "checkout", "--", "config/roles/solver.yaml"], check=True)
+        print("[HUMAN-IN-LOOP] reverted - no commit")
 ```
 
 ---

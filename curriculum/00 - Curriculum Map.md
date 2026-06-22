@@ -100,6 +100,25 @@ Most things that look like agents are automations. The discipline is knowing whe
 
 ---
 
+## The `agentkit` Through-Line
+
+> [!info] How the lab is built — the `agentkit` library
+> The curriculum teaches every concept from first principles. The canonical, runnable implementation the lab builds on is the [`agentkit`](https://github.com/shaneliuyx/agentkit) library (`pip install "git+https://github.com/shaneliuyx/agentkit"`). Each chapter's hands-on lab delegates to a matching `agentkit` module; the fully composed agent is instantiated in `scaffold/lab_agent.py` as `agentkit.SelfImprovingAgent.from_config(...)` (an oMLX-adapter-wired facade).
+>
+> The pedagogy is unchanged — understand the concept first, then see how `agentkit` implements it. The library's design axiom: **"a cheap deterministic stage gates the expensive LLM stage"** — the keep/discard control is deterministic and model-free; the LLM proposes; the LEARN gate admits (the LLM is a veto, not a vote).
+>
+> | Chapter | Concept | `agentkit` module |
+> |---------|---------|-------------------|
+> | 03 | Minimal agent loop | `agentkit.agent` (`run_agent` / `run_role`) |
+> | 04 | Memory systems | `agentkit.memory` (`MemoryStore`) |
+> | 05 / 08 | Reflection + self-modification | `agentkit.evolve` (`distill_group`, `evolve_prompt`, RHO) |
+> | 06 | Skill acquisition | `agentkit.skills` (`SkillLibrary`, `optimize_skill`) |
+> | 07 | Verification gates | `agentkit.gates` (`run_gate`, `Outcome`, veto-not-vote) |
+> | 09 | Sandboxing | `agentkit.sandbox` / `agentkit.agent` (net_guard / quarantine shim) |
+> | 11 | Capstone production agent | `agentkit.SelfImprovingAgent` (composed in `scaffold/lab_agent.py`) |
+
+---
+
 ## The Canonical Loop
 
 Every module is consistent with one vocabulary:

@@ -165,7 +165,7 @@ The TDD Hardening approach (documented in [agent-seed's PR #82](https://github.c
 This is distinct from using tests as evaluation signal (section 2.1): here, the test is written before the skill, making the gate specification explicit rather than implicit.
 
 > [!example] TDD hardening in the scaffold
-> In `verification/gates.py`, the `CodeSkillGate` class accepts a test file path alongside the proposed skill. It writes the skill to a temp directory, runs `pytest` against the temp dir, reads the return code, and returns `GateResult.PASS` or `GateResult.FAIL`. The skill is never written to `skills/SKILLS/` directly by the agent - only by the gate on pass.
+> In `verification/gates.py`, the scaffold calls `run_gate(proposal, baseline_score=..., sandbox=SubprocessSandbox(), evaluator=...)` from `agentkit.gates`. The `execute` stage runs the proposed skill code inside `SubprocessSandbox` (cwd-jailed, timed, output-capped); a crash or test failure at that stage returns `Outcome.REJECT` with `verdict.stage == "execute"`. The skill is never written to `skills/SKILLS/` directly by the agent — only when `verdict.status == Outcome.ACCEPT`.
 
 ---
 
@@ -183,381 +183,197 @@ pip install openai jsonschema pytest
 
 ### 6.2 - The Gate Implementation
 
+> [!info] In the lab: agentkit.gates
+> `verification/gates.py` in the scaffold **delegates** to `agentkit.gates`. The public API is `run_gate` / `Gate` / `Outcome` from `agentkit.gates`, and `SubprocessSandbox` from `agentkit.sandbox`. Every self-modification admitted by `agentkit.SelfImprovingAgent` — skills, prompts, tool registrations — passes through this gate (see `scaffold/lab_agent.py`, `agent.improve`). You do not need to build the gate from scratch; you configure and call it.
+
+The LEARN admission gate in `agentkit` runs six deterministic stages in order — **syntax → containment → execute → regression → safety → delta** — and returns one of three outcomes: `ACCEPT`, `REJECT`, or `ESCALATE`.
+
+The invariant to hold in your head: **the LLM is a veto, not a vote.** The deterministic stages (syntax through delta) decide first. The injected safety LLM (`evaluator`) can only add a veto — `ESCALATE` or `REJECT` — after the deterministic stages pass. It can never flip a deterministic `REJECT` to `ACCEPT`.
+
 ```python
-# verification/gates.py
+# verification/gates.py  (scaffold file — delegates to agentkit)
 """
-Verification gates for LEARN proposals.
-Three possible outcomes: PASS, FAIL, ESCALATE_TO_HUMAN.
+Verification gate for LEARN proposals.
+Delegates to agentkit.gates.  Three outcomes: ACCEPT, REJECT, ESCALATE.
 
-Supports:
-  - Schema validation (structural gate)
-  - Eval task replay (semantic gate)
-  - Stronger model as judge (quality gate)
-  - Human-in-the-loop (final gate for high-stakes changes)
+Stage order (deterministic first, LLM veto last):
+  syntax -> containment -> execute -> regression -> safety -> delta
 
-Works with both AGENT_BACKEND=omlx and AGENT_BACKEND=vibeproxy.
-Judge calls always use vibeproxy (larger model) if available, else omlx.
+The LLM evaluator is a veto, not a vote: it can only REJECT/ESCALATE
+after deterministic stages pass; it cannot override a deterministic REJECT.
 """
 
-from __future__ import annotations
-
-import json
-import os
-import subprocess
-import tempfile
-import textwrap
-from dataclasses import dataclass, field
-from enum import Enum
-from pathlib import Path
-from typing import Any, Optional
-
-from jsonschema import ValidationError, validate
-
-# -- Import the unified adapter -----------------------------------------------
-import sys
-sys.path.insert(0, str(Path(__file__).parent.parent))
-from backends.adapter import make_client
-
+from agentkit.gates import run_gate, Gate, Outcome
+from agentkit.sandbox import SubprocessSandbox
 
 # ---------------------------------------------------------------------------
-# Types
+# Functional form — one call, one Verdict
 # ---------------------------------------------------------------------------
 
-class GateOutcome(str, Enum):
-    PASS = "pass"
-    FAIL = "fail"
-    ESCALATE = "escalate"
-
-
-@dataclass
-class GateResult:
-    outcome: GateOutcome
-    reason: str
-    details: dict[str, Any] = field(default_factory=dict)
-
-    @property
-    def passed(self) -> bool:
-        return self.outcome == GateOutcome.PASS
-
-
-# ---------------------------------------------------------------------------
-# Gate 1 - Schema / structural validation
-# ---------------------------------------------------------------------------
-
-MEMORY_ENTRY_SCHEMA = {
-    "type": "object",
-    "required": ["type", "content", "source_task"],
-    "properties": {
-        "type":        {"type": "string", "enum": ["heuristic", "fact", "procedure"]},
-        "content":     {"type": "string", "minLength": 10},
-        "source_task": {"type": "string"},
-        "confidence":  {"type": "number", "minimum": 0.0, "maximum": 1.0},
-        "tags":        {"type": "array", "items": {"type": "string"}},
-    },
-    "additionalProperties": True,
-}
-
-SKILL_ENTRY_SCHEMA = {
-    "type": "object",
-    "required": ["name", "description", "code", "tags"],
-    "properties": {
-        "name":        {"type": "string", "pattern": "^[a-z_][a-z0-9_]*$"},
-        "description": {"type": "string", "minLength": 20},
-        "code":        {"type": "string"},
-        "tags":        {"type": "array", "items": {"type": "string"}},
-    },
-    "additionalProperties": True,
-}
-
-
-def schema_gate(proposal: dict, artifact_type: str = "memory") -> GateResult:
-    """Gate 1 - validate structure before anything else."""
-    schema = MEMORY_ENTRY_SCHEMA if artifact_type == "memory" else SKILL_ENTRY_SCHEMA
-    try:
-        validate(instance=proposal, schema=schema)
-        return GateResult(GateOutcome.PASS, "Schema valid")
-    except ValidationError as exc:
-        return GateResult(GateOutcome.FAIL, f"Schema invalid: {exc.message}")
-
-
-# ---------------------------------------------------------------------------
-# Gate 2 - Eval task replay (semantic gate)
-# ---------------------------------------------------------------------------
-
-def eval_gate(
-    proposal: dict,
-    eval_tasks: list[dict],
-    run_fn,
-    threshold: float = 0.6,
-) -> GateResult:
+def admit_proposal(proposal: dict, baseline_score: float, evaluator) -> tuple[Outcome, str]:
     """
-    Gate 2 - run held-out eval tasks; accept if pass_rate >= threshold.
+    Run the LEARN admission gate on a proposed self-modification.
 
-    eval_tasks: list of {"input": ..., "expected": ...}
-    run_fn: callable(agent_state_with_proposal, input) -> str answer
+    proposal:       e.g. {"type": "skill", "code": "def foo(): ..."}
+    baseline_score: current agent score on the held-out eval set (0.0–1.0)
+    evaluator:      callable(proposal) -> float  (new score if proposal were applied)
+
+    Returns (Outcome, stage_that_decided).
     """
-    if not eval_tasks:
-        return GateResult(GateOutcome.PASS, "No eval tasks configured - skipping semantic gate")
-
-    passed = 0
-    results = []
-    for task in eval_tasks:
-        answer = run_fn(proposal, task["input"])
-        ok = str(task["expected"]).strip().lower() in str(answer).strip().lower()
-        results.append({"input": task["input"], "expected": task["expected"], "got": answer, "ok": ok})
-        if ok:
-            passed += 1
-
-    rate = passed / len(eval_tasks)
-    if rate >= threshold:
-        return GateResult(GateOutcome.PASS, f"Eval pass rate {rate:.0%} >= {threshold:.0%}", {"results": results})
-    return GateResult(GateOutcome.FAIL, f"Eval pass rate {rate:.0%} < {threshold:.0%}", {"results": results})
-
-
-# ---------------------------------------------------------------------------
-# Gate 3 - Stronger model as judge
-# ---------------------------------------------------------------------------
-
-JUDGE_PROMPT = textwrap.dedent("""
-You are a strict quality gate for a self-improving agent system.
-You will be given a proposed change to the agent's memory or skill library.
-Evaluate it on three axes, each scored 1-5:
-  1. Accuracy - is the content factually correct and task-relevant?
-  2. Generality - will it help on future tasks, or is it over-fit to one case?
-  3. Safety - could it cause the agent to behave incorrectly or dangerously?
-
-Respond with ONLY valid JSON in this exact shape:
-{
-  "accuracy": <1-5>,
-  "generality": <1-5>,
-  "safety": <1-5>,
-  "verdict": "PASS" | "FAIL" | "ESCALATE",
-  "reason": "<one sentence>"
-}
-""").strip()
-
-
-def judge_gate(proposal: dict, artifact_type: str = "memory") -> GateResult:
-    """
-    Gate 3 - use a stronger model to evaluate quality.
-    Prefers vibeproxy (larger Claude) as judge; falls back to omlx.
-    """
-    judge_backend = os.getenv("JUDGE_BACKEND", "vibeproxy")
-    try:
-        client, model = make_client(judge_backend)
-    except Exception:
-        client, model = make_client("omlx")
-
-    user_msg = (
-        f"Artifact type: {artifact_type}\n\n"
-        f"Proposed content:\n{json.dumps(proposal, indent=2)}"
+    verdict = run_gate(
+        proposal,
+        baseline_score=baseline_score,
+        sandbox=SubprocessSandbox(),
+        evaluator=evaluator,
     )
-
-    try:
-        resp = client.chat.completions.create(
-            model=model,
-            messages=[
-                {"role": "system", "content": JUDGE_PROMPT},
-                {"role": "user",   "content": user_msg},
-            ],
-            temperature=0,
-            max_tokens=256,
-        )
-        raw = resp.choices[0].message.content.strip()
-        # Strip markdown fences if the model wraps them
-        if raw.startswith("```"):
-            raw = raw.split("```")[1]
-            if raw.startswith("json"):
-                raw = raw[4:]
-        result = json.loads(raw)
-    except Exception as exc:
-        # If the judge call fails entirely, escalate rather than silently pass/fail
-        return GateResult(GateOutcome.ESCALATE, f"Judge call failed: {exc}")
-
-    verdict = result.get("verdict", "FAIL").upper()
-    reason  = result.get("reason", "no reason provided")
-    details = {k: result[k] for k in ("accuracy", "generality", "safety") if k in result}
-
-    if verdict == "PASS":
-        return GateResult(GateOutcome.PASS, reason, details)
-    if verdict == "ESCALATE":
-        return GateResult(GateOutcome.ESCALATE, reason, details)
-    return GateResult(GateOutcome.FAIL, reason, details)
+    return verdict.status, verdict.stage
 
 
 # ---------------------------------------------------------------------------
-# Gate 4 - Human-in-the-loop (CLI prompt; replace with UI/webhook in prod)
+# Class form — reuse sandbox and evaluator across many proposals
 # ---------------------------------------------------------------------------
 
-def human_gate(proposal: dict, artifact_type: str = "memory") -> GateResult:
-    """
-    Gate 4 - ask a human to approve or reject.
-    In production, replace with a webhook, Slack message, or UI review queue.
-    """
-    print("\n" + "=" * 60)
-    print(f"[HUMAN REVIEW REQUIRED] Proposed {artifact_type} change:")
-    print(json.dumps(proposal, indent=2))
-    print("=" * 60)
-    answer = input("Approve? [y/N/e=escalate]: ").strip().lower()
-    if answer == "y":
-        return GateResult(GateOutcome.PASS, "Human approved")
-    if answer == "e":
-        return GateResult(GateOutcome.ESCALATE, "Human requested escalation")
-    return GateResult(GateOutcome.FAIL, "Human rejected")
-
-
-# ---------------------------------------------------------------------------
-# Composite gate runner
-# ---------------------------------------------------------------------------
-
-def run_gates(
-    proposal: dict,
-    artifact_type: str = "memory",
-    eval_tasks: list[dict] | None = None,
-    eval_run_fn=None,
-    eval_threshold: float = 0.6,
-    require_human: bool = False,
-    skip_judge: bool = False,
-) -> GateResult:
-    """
-    Run gates in sequence. Stop and return on first FAIL or ESCALATE.
-
-    Gate order:
-      1. Schema (L2 - deterministic)
-      2. Eval replay (L2 - deterministic, optional)
-      3. Judge model (L2 - model-based, skippable)
-      4. Human (L2 - human, when require_human=True or earlier gate escalates)
-    """
-    # Gate 1 - Schema
-    r = schema_gate(proposal, artifact_type)
-    if not r.passed:
-        print(f"[GATE 1 SCHEMA] {r.outcome.value}: {r.reason}")
-        return r
-    print(f"[GATE 1 SCHEMA] pass")
-
-    # Gate 2 - Eval replay (optional)
-    if eval_tasks and eval_run_fn:
-        r = eval_gate(proposal, eval_tasks, eval_run_fn, eval_threshold)
-        print(f"[GATE 2 EVAL  ] {r.outcome.value}: {r.reason}")
-        if not r.passed:
-            return r
-
-    # Gate 3 - Judge model (skippable for tests or offline use)
-    if not skip_judge:
-        r = judge_gate(proposal, artifact_type)
-        print(f"[GATE 3 JUDGE ] {r.outcome.value}: {r.reason}")
-        if r.outcome == GateOutcome.FAIL:
-            return r
-        if r.outcome == GateOutcome.ESCALATE:
-            require_human = True  # Force human review on escalation
-
-    # Gate 4 - Human (explicit or escalated)
-    if require_human:
-        r = human_gate(proposal, artifact_type)
-        print(f"[GATE 4 HUMAN ] {r.outcome.value}: {r.reason}")
-        return r
-
-    return GateResult(GateOutcome.PASS, "All gates passed")
+def make_gate(evaluator) -> Gate:
+    """Return a Gate instance bound to SubprocessSandbox and the given evaluator."""
+    return Gate(sandbox=SubprocessSandbox(), evaluator=evaluator)
 ```
+
+Key points about the stage ordering:
+
+- **syntax** — rejects immediately if the proposal code does not parse. No sandbox, no LLM.
+- **containment** — ESCALATEs proposals whose code calls filesystem, subprocess, network, or `exec`/`eval`. Side-effecting proposals are flagged before execution, not after.
+- **execute** — runs the code in `SubprocessSandbox` (argv-not-shell, cwd-jailed, timed, output-capped). A crash here REJECTs at the `execute` stage.
+- **regression** — calls `evaluator(proposal)` and checks the new score against `baseline_score`. A drop REJECTs.
+- **safety** — the injected LLM veto. Can ESCALATE or REJECT; cannot flip a prior deterministic decision.
+- **delta** — final magnitude check; rejects implausibly large jumps (positive or negative).
 
 ### 6.3 - Trying the Gate
 
 ```python
-# Run from the scaffold root: python -c "from verification.gates import run_gates; ..."
-# Or save this as verification/try_gate.py
+# verification/try_gate.py  (run from scaffold root)
 
-from verification.gates import run_gates, GateOutcome
+from agentkit.gates import run_gate, Outcome
+from agentkit.sandbox import SubprocessSandbox
 
-# A well-formed memory proposal
+# A clean skill proposal — should reach ACCEPT
 good_proposal = {
-    "type": "heuristic",
-    "content": "When the user asks for file diffs, always include surrounding context lines.",
-    "source_task": "task_2026_05_31_001",
-    "confidence": 0.85,
-    "tags": ["files", "diffs", "context"],
+    "type": "skill",
+    "code": "def summarise(text: str) -> str:\n    return text[:200]",
 }
 
-# A malformed proposal (missing required field)
-bad_proposal = {
-    "type": "heuristic",
-    "content": "short",  # too short - minLength 10 violated
-    # missing source_task
+# A proposal with a syntax error — REJECTs at the syntax stage
+bad_syntax = {
+    "type": "skill",
+    "code": "def broken(:\n    pass",
 }
 
-print("--- Good proposal ---")
-result = run_gates(good_proposal, artifact_type="memory", skip_judge=True)
-print(f"Final outcome: {result.outcome.value}\n")
+# A proposal that touches the filesystem — ESCALATEs at containment
+side_effecting = {
+    "type": "skill",
+    "code": "import os\ndef rm_logs():\n    os.remove('/tmp/log.txt')",
+}
 
-print("--- Bad proposal ---")
-result = run_gates(bad_proposal, artifact_type="memory", skip_judge=True)
-print(f"Final outcome: {result.outcome.value} - {result.reason}\n")
+# Dummy evaluator: always returns a score slightly above baseline
+evaluator = lambda proposal: 0.75
+
+sandbox = SubprocessSandbox()
+
+for label, proposal in [
+    ("good_proposal", good_proposal),
+    ("bad_syntax", bad_syntax),
+    ("side_effecting", side_effecting),
+]:
+    verdict = run_gate(proposal, baseline_score=0.5, sandbox=sandbox, evaluator=evaluator)
+    print(f"[{label}] status={verdict.status}  decided_at_stage={verdict.stage}")
+
+# Expected output:
+# [good_proposal]    status=accept    decided_at_stage=delta
+# [bad_syntax]       status=reject    decided_at_stage=syntax
+# [side_effecting]   status=escalate  decided_at_stage=containment
 ```
 
-Run with either backend (judge gate will use vibeproxy if `AGENT_BACKEND=vibeproxy` is set):
+Checking outcomes with the `Outcome` enum:
+
+```python
+from agentkit.gates import Outcome
+
+if verdict.status == Outcome.ACCEPT:
+    store.write(proposal)
+elif verdict.status == Outcome.ESCALATE:
+    queue_for_human_review(proposal, stage=verdict.stage)
+else:  # Outcome.REJECT
+    log_rejected(proposal, stage=verdict.stage)
+
+# Outcome values are plain strings — Outcome.ACCEPT == "accept", etc.
+assert Outcome.ACCEPT == "accept"
+assert Outcome.REJECT == "reject"
+assert Outcome.ESCALATE == "escalate"
+```
+
+Run from the scaffold root (no special backend needed — the gate is local):
 
 ```bash
-# Local model as judge
-AGENT_BACKEND=omlx python verification/try_gate.py
-
-# Claude via VibeProxy as judge (note: VibeProxy ToS caveat applies - check your subscription terms)
-AGENT_BACKEND=vibeproxy JUDGE_BACKEND=vibeproxy python verification/try_gate.py
+python verification/try_gate.py
 ```
 
 > [!tip] Rate limits vs. token cost
-> Because VibeProxy routes a Claude MAX subscription (not a pay-per-token API), calling the judge model on every LEARN proposal costs you nothing in dollars - it only consumes rate limit headroom. This makes multi-call evaluation pipelines practical here in a way they would not be on a metered API.
+> The safety LLM veto inside `agentkit.gates` is invoked only after all deterministic stages pass. On your local stack with `AGENT_BACKEND=vibeproxy`, this means the LLM call is made at most once per proposal that survives syntax, containment, execute, and regression checks — cheap deterministic stages filter the expensive call. Because VibeProxy routes a Claude MAX subscription (not a pay-per-token API), this veto call costs you nothing in dollars, only rate-limit headroom.
 
 ---
 
 ## 7 - Wiring the Gate into the Full Loop
 
-With `run_gates` in place, the LEARN step in `evolve/loop.py` becomes:
+With `agentkit.gates` in place, the LEARN step in `evolve/loop.py` becomes:
 
 ```python
 # evolve/loop.py (relevant excerpt)
-from verification.gates import run_gates, GateOutcome
+import json, datetime
+from pathlib import Path
+
+from agentkit.gates import run_gate, Outcome
+from agentkit.sandbox import SubprocessSandbox
 from memory.store import MemoryStore
 from reflection.reflect import reflect_on_trajectory
 
-def improve_from_trajectory(trajectory: dict, store: MemoryStore) -> None:
+
+def improve_from_trajectory(trajectory: dict, store: MemoryStore, evaluator, baseline_score: float) -> None:
     """Run one REFLECT -> VERIFY -> LEARN cycle."""
 
-    # REFLECT - generate a proposed memory update
+    # REFLECT - generate a proposed self-modification
     proposal = reflect_on_trajectory(trajectory)
     if proposal is None:
         print("[IMPROVE] No proposal generated - nothing to verify.")
         return
 
-    # VERIFY - gate the proposal before writing
-    # High-stakes changes (confidence > 0.9 or type == "procedure") get human review
-    high_stakes = (
-        proposal.get("confidence", 0.0) > 0.9
-        or proposal.get("type") == "procedure"
-    )
-    result = run_gates(
+    # VERIFY - run the admission gate (deterministic stages first, LLM veto last)
+    verdict = run_gate(
         proposal,
-        artifact_type="memory",
-        require_human=high_stakes,
+        baseline_score=baseline_score,
+        sandbox=SubprocessSandbox(),
+        evaluator=evaluator,
     )
 
-    if result.outcome == GateOutcome.PASS:
+    if verdict.status == Outcome.ACCEPT:
         store.write(proposal)
-        print(f"[IMPROVE] Accepted: {proposal['content'][:60]}...")
-    else:
-        print(f"[IMPROVE] Rejected ({result.outcome.value}): {result.reason}")
-        # Optionally: log to evolve/archive/ for meta-analysis
-        _log_rejected(proposal, result)
+        print(f"[IMPROVE] Accepted at stage={verdict.stage}: {str(proposal)[:60]}...")
+    elif verdict.status == Outcome.ESCALATE:
+        print(f"[IMPROVE] Escalated at stage={verdict.stage} - queued for human review")
+        _log_rejected(proposal, verdict)
+    else:  # Outcome.REJECT
+        print(f"[IMPROVE] Rejected at stage={verdict.stage}")
+        _log_rejected(proposal, verdict)
 
 
-def _log_rejected(proposal: dict, result) -> None:
-    import json, datetime
-    from pathlib import Path
+def _log_rejected(proposal: dict, verdict) -> None:
     archive = Path("evolve/archive")
     archive.mkdir(exist_ok=True)
     ts = datetime.datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
     (archive / f"rejected_{ts}.json").write_text(
-        json.dumps({"proposal": proposal, "outcome": result.outcome.value, "reason": result.reason}, indent=2)
+        json.dumps({"proposal": proposal, "status": verdict.status, "stage": verdict.stage}, indent=2)
     )
 ```
+
+The `stage` field on the verdict tells you *which* deterministic check triggered — useful for debugging why a proposal was rejected without having to re-run the full gate.
 
 ---
 
@@ -570,10 +386,10 @@ def _log_rejected(proposal: dict, result) -> None:
 > If you discard proposals without logging them, you lose the signal about what your agent is getting wrong at the reflection stage. Write every rejection to `evolve/archive/` with the reason. This log is the raw material for [[08 - Self-Modification - The DGM Pattern]] meta-improvements.
 
 > [!warning] Threshold calibration is a project-specific task
-> The default `eval_threshold=0.6` in `eval_gate` is a starting point, not a universal truth. Start conservative (0.8+) and lower only if you observe excessive rejection of genuinely good proposals. Track your accept/reject ratio in `CHANGELOG.md`.
+> The `baseline_score` you pass to `run_gate` sets the floor for the regression stage. The gate rejects proposals whose `evaluator` score falls below that floor. Start conservative (baseline near your current best score) and relax only if you observe excessive rejection of genuinely good proposals. Track your accept/reject ratio in `CHANGELOG.md`.
 
 > [!danger] L1 prompt rules are not a gate
-> It is tempting to add a rule like "only write memory if the eval passes" to your system prompt. Based on the [NousResearch production finding](https://github.com/NousResearch/hermes-agent/issues/29652), this will fail under task pressure. The gate must be L2 code - the `if result.outcome == GateOutcome.PASS` check in Python, not an instruction to the LLM.
+> It is tempting to add a rule like "only write memory if the eval passes" to your system prompt. Based on the [NousResearch production finding](https://github.com/NousResearch/hermes-agent/issues/29652), this will fail under task pressure. The gate must be L2 code — the `if verdict.status == Outcome.ACCEPT` check in Python, not an instruction to the LLM.
 
 > [!tip] Sandboxing and VERIFY are complementary
 > VERIFY decides whether to accept a change. [[09 - Sandboxing and Safe Execution]] decides whether to run it safely. Use both: sandbox the eval run so a malicious skill cannot escape, then gate the result.
@@ -583,9 +399,9 @@ def _log_rejected(proposal: dict, result) -> None:
 > [!question] Checkpoint
 > 1. What is "recursive drift" and which step in the ACT -> RECORD -> REFLECT -> LEARN loop prevents it?
 > 2. The NousResearch production finding says "Layer 1 alone failed." What does that mean in practice, and what is the recommended fix?
-> 3. You have a proposed memory heuristic that scored 0.55 on a 10-task eval set with a threshold of 0.6. The judge model returns PASS. Which gate triggers, and what is the outcome?
-> 4. Why should the judge model be different from (or at least isolated from) the model that generated the proposal?
-> 5. Under what conditions should `require_human=True` be set in `run_gates`? Give two concrete examples from the scaffold.
+> 3. A proposal passes syntax and containment checks, but its `evaluator` score (0.45) is below the `baseline_score` (0.5). The safety LLM would have returned ACCEPT. What does `run_gate` return, and at which stage?
+> 4. Why should the safety LLM veto be injected after the deterministic stages rather than before?
+> 5. A proposal ESCALATEs at the `containment` stage. What does that tell you about the proposal's code, and what should the scaffold do next?
 
 ---
 

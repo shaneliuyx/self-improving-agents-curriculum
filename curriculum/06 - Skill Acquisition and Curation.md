@@ -12,6 +12,9 @@ updated: 2026-06-01
 > [!info] Prerequisites
 > This module builds directly on [[05 - Reflection and Self-Correction]]. You should also be comfortable with [[04 - Memory Systems]] because the skill library is a form of long-term structured memory.
 
+> [!note] In the lab: agentkit.skills
+> The scaffold's `skills/library.py` delegates to **`agentkit.skills`** — import `SkillLibrary`, `optimize_skill`, and `Skill` from there. `SkillLibrary(embedder, directory)` is the curated, gate-passed store; `.retrieve(query, k=3)` does semantic recall; `.save(skill)` persists the gate-passed artifact. The SkillOpt optimization loop is `optimize_skill(skill, propose=..., evaluate=..., gate=..., baseline_score=..., epochs=..., out_dir=...)`. Group-relative distillation of skill candidates uses `agentkit.evolve.distill_group(rollouts, verifier=...)`. `SelfImprovingAgent` exposes the library as `agent.skills` — see `scaffold/lab_agent.py`.
+
 ---
 
 ## Learning Objectives
@@ -96,36 +99,32 @@ classDiagram
     class Skill {
         +str name
         +str when_to_use
-        +str code
-        +str prompt_template
-        +str provenance
-        +float success_rate
-        +int use_count
-        +str created_at
-        +list~str~ tags
-        +validate(task) bool
+        +str body
+        +float eval_score
         +to_dict() dict
         +from_dict(d) Skill
+        +with_body(body, eval_score) Skill
     }
     class SkillLibrary {
-        +str skills_dir
-        +list~Skill~ index
-        +propose(trajectory, llm) Skill
-        +store(skill) None
-        +retrieve(query, top_k) list~Skill~
-        +curate() None
-        +dedupe(threshold) None
+        +Embedder embedder
+        +Path directory
+        +propose(...) Skill
+        +add(...) None
+        +save(skill) Path
+        +load(name) Skill
+        +list() list~str~
+        +retrieve(query, k) list~Skill~
     }
     SkillLibrary "1" --> "*" Skill : manages
 ```
 
-*Skill object and library manager. `provenance` records which trajectory spawned the skill; `success_rate` drives curation decisions.*
+*Skill object and library manager from `agentkit.skills`. `body` is the optimisable text artifact; `eval_score` drives curation decisions. `retrieve(query, k=3)` does semantic nearest-neighbour lookup over `when_to_use`.*
 
 Key fields:
 - `when_to_use` - a natural-language description used for embedding-based retrieval. Write it as a search query, not a title.
-- `provenance` - the trajectory ID that produced this skill. Enables tracing a bad skill back to the run that generated it.
-- `success_rate` - updated on every use. Skills below 0.4 after 10+ uses are candidates for removal.
-- `code` vs `prompt_template` - skills can be procedural (Python code) or declarative (a prompt template). Store both types uniformly.
+- `body` - the optimisable text artifact (Python code, a prompt template, or a multi-step procedure). `optimize_skill` treats this as the trainable payload.
+- `eval_score` - updated by the gate after each optimization epoch. Skills below threshold are candidates for removal.
+- Skills can be procedural (Python code) or declarative (a prompt template); `body` stores both types uniformly.
 
 ---
 
@@ -140,23 +139,18 @@ A library that only grows becomes a retrieval problem. [SkillOS](https://arxiv.o
 Curation rules (run after every 10 new skill proposals):
 
 ```python
-# skills/library.py excerpt - curation pass
-def curate(self, sim_threshold: float = 0.92, min_uses: int = 10, min_success: float = 0.4):
-    # 1. Remove skills that consistently fail
-    for skill in list(self.index):
-        if skill.use_count >= min_uses and skill.success_rate < min_success:
-            self._remove(skill, reason="low_success_rate")
+# Group-relative distillation — keep lessons only from rollouts that beat the group mean
+from agentkit.evolve import distill_group
 
-    # 2. Merge near-duplicate skills (keep higher success_rate)
-    embeddings = self._embed_all()
-    for i, s1 in enumerate(self.index):
-        for j, s2 in enumerate(self.index):
-            if j <= i:
-                continue
-            cos = self._cosine(embeddings[i], embeddings[j])
-            if cos > sim_threshold:
-                loser = s1 if s1.success_rate <= s2.success_rate else s2
-                self._remove(loser, reason=f"duplicate_of_{s1.name if loser is s2 else s2.name}")
+# rollouts: list of (skill_candidate, eval_score) pairs from a proposal batch
+result = distill_group(rollouts, verifier=my_verifier)
+# result.kept   — skill bodies that strictly beat the group mean → store these
+# result.lessons  — extracted lessons from winning rollouts
+# result.counter_lessons — lessons from below-mean rollouts (what NOT to do)
+
+# Near-duplicate suppression is handled inside SkillLibrary.propose() +
+# SkillLibrary.retrieve() (cosine gate on the embedder). For manual sweeps,
+# compare retrieve() results against incoming candidates before calling .save().
 ```
 
 > [!tip] Curation is cheaper than you think
@@ -190,174 +184,51 @@ pip install openai numpy
 # Optionally set AGENT_BACKEND=vibeproxy for the generation step
 ```
 
-### Step 1 - Implement the Skill class and SkillLibrary
+### Step 1 - Instantiate the SkillLibrary from agentkit
+
+`skills/library.py` in the lab scaffold delegates directly to `agentkit.skills` — no hand-rolled embedding or cosine logic required.
 
 ```python
-# skills/library.py
-from __future__ import annotations
-import json, os, time, math
-from dataclasses import dataclass, field, asdict
+# skills/library.py  (lab scaffold — the real implementation lives in agentkit)
+from agentkit.skills import SkillLibrary, Skill, optimize_skill
+from agentkit.evolve import distill_group
+from backends.omlx_embedder import OMLXEmbedder   # local oMLX embedding model
 from pathlib import Path
-from typing import Optional
-from openai import OpenAI
 
 SKILLS_DIR = Path(__file__).parent / "SKILLS"
 SKILLS_DIR.mkdir(exist_ok=True)
 
-# Embeddings always use oMLX locally - see spec
-_emb_client = OpenAI(base_url="http://localhost:8000/v1", api_key="not-needed")
+# SkillLibrary(embedder, directory) — curated, gate-passed skill store.
+# Embeddings always run locally via oMLX regardless of AGENT_BACKEND.
+lib = SkillLibrary(embedder=OMLXEmbedder(), directory=SKILLS_DIR)
 
-def _embed(text: str) -> list[float]:
-    return _emb_client.embeddings.create(
-        model=os.getenv("EMBED_MODEL", "nomic-embed-text"),
-        input=text,
-    ).data[0].embedding
-
-def _cosine(a: list[float], b: list[float]) -> float:
-    dot = sum(x * y for x, y in zip(a, b))
-    na = math.sqrt(sum(x**2 for x in a))
-    nb = math.sqrt(sum(x**2 for x in b))
-    return dot / (na * nb + 1e-9)
-
-
-@dataclass
-class Skill:
-    name: str
-    when_to_use: str
-    code: str
-    provenance: str = ""           # trajectory ID that generated this skill
-    success_rate: float = 1.0
-    use_count: int = 0
-    created_at: str = field(default_factory=lambda: time.strftime("%Y-%m-%dT%H:%M:%S"))
-    tags: list[str] = field(default_factory=list)
-    prompt_template: str = ""
-
-    def to_dict(self) -> dict:
-        return asdict(self)
-
-    @classmethod
-    def from_dict(cls, d: dict) -> "Skill":
-        return cls(**{k: v for k, v in d.items() if k in cls.__dataclass_fields__})
-
-
-class SkillLibrary:
-    def __init__(self, skills_dir: Path = SKILLS_DIR):
-        self.skills_dir = skills_dir
-        self.index: list[Skill] = self._load_all()
-
-    # ------------------------------------------------------------------ I/O
-
-    def _load_all(self) -> list[Skill]:
-        skills = []
-        for p in self.skills_dir.glob("*.json"):
-            try:
-                skills.append(Skill.from_dict(json.loads(p.read_text())))
-            except Exception:
-                pass
-        return skills
-
-    def store(self, skill: Skill) -> None:
-        path = self.skills_dir / f"{skill.name}.json"
-        path.write_text(json.dumps(skill.to_dict(), indent=2))
-        self.index.append(skill)
-        self._changelog(f"ADD {skill.name} provenance={skill.provenance}")
-
-    def _remove(self, skill: Skill, reason: str = "") -> None:
-        path = self.skills_dir / f"{skill.name}.json"
-        if path.exists():
-            path.unlink()
-        self.index = [s for s in self.index if s.name != skill.name]
-        self._changelog(f"REMOVE {skill.name} reason={reason}")
-
-    def _changelog(self, msg: str) -> None:
-        cl = Path(__file__).parent.parent / "CHANGELOG.md"
-        entry = f"\n- {time.strftime('%Y-%m-%dT%H:%M:%S')} skills: {msg}"
-        with cl.open("a") as f:
-            f.write(entry)
-
-    # ------------------------------------------------------------------ propose
-
-    def propose(self, trajectory: str, llm_client, model: str) -> Optional[Skill]:
-        """Ask the LLM to extract a reusable skill from a successful trajectory."""
-        system = (
-            "You are a skill extractor. Given a successful agent trajectory, "
-            "extract ONE reusable skill as JSON with keys: "
-            "name (snake_case), when_to_use (one sentence, written as a search query), "
-            "code (a self-contained Python function), tags (list of strings). "
-            "Return ONLY valid JSON, no markdown fences."
-        )
-        resp = llm_client.chat.completions.create(
-            model=model,
-            messages=[
-                {"role": "system", "content": system},
-                {"role": "user", "content": f"Trajectory:\n{trajectory}"},
-            ],
-            temperature=0.2,
-        )
-        raw = resp.choices[0].message.content.strip()
-        try:
-            data = json.loads(raw)
-            return Skill(
-                name=data["name"],
-                when_to_use=data["when_to_use"],
-                code=data["code"],
-                tags=data.get("tags", []),
-                provenance=trajectory[:80],
-            )
-        except Exception as e:
-            print(f"[propose] parse error: {e}\nraw={raw[:200]}")
-            return None
-
-    # ------------------------------------------------------------------ retrieve
-
-    def retrieve(self, query: str, top_k: int = 3) -> list[Skill]:
-        if not self.index:
-            return []
-        q_vec = _embed(query)
-        scored = sorted(
-            self.index,
-            key=lambda s: _cosine(q_vec, _embed(s.when_to_use)),
-            reverse=True,
-        )
-        return scored[:top_k]
-
-    # ------------------------------------------------------------------ curate
-
-    def curate(self, sim_threshold: float = 0.92, min_uses: int = 10,
-               min_success: float = 0.4) -> None:
-        # Remove consistently failing skills
-        for skill in list(self.index):
-            if skill.use_count >= min_uses and skill.success_rate < min_success:
-                self._remove(skill, reason="low_success_rate")
-
-        # Deduplicate near-identical skills
-        vecs = {s.name: _embed(s.when_to_use) for s in self.index}
-        to_remove: set[str] = set()
-        idx = list(self.index)
-        for i in range(len(idx)):
-            for j in range(i + 1, len(idx)):
-                s1, s2 = idx[i], idx[j]
-                if s1.name in to_remove or s2.name in to_remove:
-                    continue
-                if _cosine(vecs[s1.name], vecs[s2.name]) > sim_threshold:
-                    loser = s1 if s1.success_rate <= s2.success_rate else s2
-                    to_remove.add(loser.name)
-                    winner = s2 if loser is s1 else s1
-                    self._remove(loser, reason=f"duplicate_of_{winner.name}")
+# Core lifecycle methods:
+#   lib.propose(...)               — LLM proposes a new Skill from a trajectory
+#   lib.save(skill) -> Path        — persist a validated skill (JSON + .md)
+#   lib.load(name)  -> Skill|None  — reload by name
+#   lib.list()      -> list[str]   — names of all stored skills
+#   lib.retrieve(query, k=3)       — semantic nearest-neighbour recall
 ```
 
-### Step 2 - Propose and validate a skill from a trajectory
+`SelfImprovingAgent` exposes the library as `agent.skills` (a `SkillLibrary`) via `SelfImprovingAgent.from_config(..., embedder=OMLXEmbedder())` — see `scaffold/lab_agent.py`.
+
+### Step 2 - Propose, validate, and store a skill via agentkit
 
 ```python
-# Run as: AGENT_BACKEND=omlx python -c "import skills.lab_demo; skills.lab_demo.run()"
-# or:     AGENT_BACKEND=vibeproxy python -c "..."
+# Run as: AGENT_BACKEND=omlx python skills/lab_demo.py
+# or:     AGENT_BACKEND=vibeproxy python skills/lab_demo.py
 # Note: VibeProxy routes generation; embeddings always use oMLX regardless.
 
 import sys
 sys.path.insert(0, "/Users/yuxinliu/self-improving-agent-lab")
 
+from agentkit.skills import SkillLibrary, Skill, optimize_skill
+from backends.omlx_embedder import OMLXEmbedder
 from backends.adapter import make_client
-from skills.library import SkillLibrary, Skill
+from pathlib import Path
+
+SKILLS_DIR = Path("skills/SKILLS")
+SKILLS_DIR.mkdir(exist_ok=True)
 
 # A minimal successful trajectory to propose a skill from
 EXAMPLE_TRAJECTORY = """
@@ -371,47 +242,31 @@ RESULT: {"the": 2, "cat": 1, "sat": 1, "on": 1, "mat": 1}
 STATUS: SUCCESS
 """
 
-def validate_skill(skill: Skill) -> bool:
-    """Execute the skill's code and check it runs without error."""
-    try:
-        ns: dict = {}
-        exec(skill.code, ns)                          # define the function
-        fn_name = [k for k in ns if not k.startswith("_")][0]
-        fn = ns[fn_name]
-        result = fn("hello world hello")              # minimal smoke test
-        print(f"[validate] {skill.name} result sample: {result}")
-        return isinstance(result, dict)
-    except Exception as e:
-        print(f"[validate] {skill.name} FAILED: {e}")
-        return False
-
 def run():
     client, model = make_client()                     # respects AGENT_BACKEND
-    lib = SkillLibrary()
+    lib = SkillLibrary(embedder=OMLXEmbedder(), directory=SKILLS_DIR)
 
     print(f"[lab] using model={model}")
-    skill = lib.propose(EXAMPLE_TRAJECTORY, client, model)
+
+    # propose() extracts a Skill from the trajectory using the LLM
+    skill = lib.propose(EXAMPLE_TRAJECTORY)
     if skill is None:
         print("[lab] proposal failed"); return
 
     print(f"[lab] proposed: {skill.name} | {skill.when_to_use}")
 
-    if validate_skill(skill):
-        # Check for duplicates before storing
-        similar = lib.retrieve(skill.when_to_use, top_k=1)
-        if similar:
-            from skills.library import _cosine, _embed
-            sim = _cosine(_embed(skill.when_to_use), _embed(similar[0].when_to_use))
-            if sim > 0.92:
-                print(f"[lab] skill too similar to '{similar[0].name}' (cos={sim:.3f}), skipping")
-                return
-        lib.store(skill)
-        print(f"[lab] stored skill: {skill.name}")
-    else:
-        print("[lab] validation failed - skill discarded")
+    # Duplicate check before saving: retrieve returns nearest neighbours
+    similar = lib.retrieve(skill.when_to_use, k=1)
+    if similar:
+        print(f"[lab] similar skill already exists: '{similar[0].name}', skipping")
+        return
 
-    # Retrieve test
-    results = lib.retrieve("count how often each word appears in a string", top_k=2)
+    # Gate passed — persist the skill (.json + .md written to SKILLS_DIR)
+    saved_path = lib.save(skill)
+    print(f"[lab] saved skill: {skill.name} -> {saved_path}")
+
+    # Semantic retrieval test
+    results = lib.retrieve("count how often each word appears in a string", k=2)
     print(f"[lab] retrieved: {[s.name for s in results]}")
 
 if __name__ == "__main__":
@@ -442,7 +297,7 @@ Expected output:
 > [!example] Composing two skills
 > Once the library has multiple skills, retrieval returns a ranked list. The agent can chain them:
 > ```python
-> skills = lib.retrieve("parse JSON then count field values", top_k=2)
+> skills = lib.retrieve("parse JSON then count field values", k=2)
 > plan = "\n".join(f"Step {i+1}: use skill '{s.name}'" for i, s in enumerate(skills))
 > ```
 > This is the COMPOSE stage in the lifecycle diagram - skills become building blocks for multi-step plans, matching the Voyager-style library design.
@@ -458,7 +313,7 @@ Expected output:
 > Embedding "Word frequency counter" retrieves poorly against query "how do I count words in a string?". Write `when_to_use` as the query a future agent would actually use: "count how often each word appears in a text string".
 
 > [!warning] Growing the library without a curation pass
-> After 50+ skills, cosine retrieval starts returning mediocre matches because the top-3 neighbours are all marginally relevant. Schedule `lib.curate()` after every 10 new proposals. The CHANGELOG.md ensures you can audit what was removed and why.
+> After 50+ skills, cosine retrieval starts returning mediocre matches because the top-3 neighbours are all marginally relevant. Run `distill_group(rollouts, verifier=...)` after every batch of new proposals to keep only above-mean candidates; use `lib.retrieve()` to pre-screen for near-duplicates before calling `lib.save()`. The CHANGELOG.md ensures you can audit what was removed and why.
 
 > [!tip] Skills vs memories
 > Use skills when you have a tested, reusable implementation. Use memories (Module 04) for prose heuristics, observed patterns, and context that does not reduce to a callable function. Both belong in a well-engineered agent; they are complementary, not competing.
@@ -479,7 +334,7 @@ Skill acquisition is the LEARN step, but it does not operate in isolation:
 
 The [Muse-Autoskill](https://arxiv.org/abs/2605.27366) paper shows that the compounding benefit of a skill library only materialises when retrieval quality is high and the library remains curated. A bloated, uncurated library degrades performance below the no-skill baseline after a few hundred entries. Curation is not optional maintenance - it is load-bearing.
 
-[SkillOpt](https://arxiv.org/abs/2605.23904) (May 2026) pushes this one step further: instead of one-shot proposal plus loose self-revision, it treats the skill document as the *trainable external state* of a frozen agent and runs a separate optimizer model that turns scored rollouts into bounded add/delete/replace edits - accepting an edit only when it strictly improves a held-out validation score. That validation gate is the same discipline our PROPOSE -> VALIDATE pipeline above enforces (and the broader principle in [[07 - Verification Gates and Layered Control]]); SkillOpt formalises it as a textbook optimizer loop with a learning-rate budget and a rejected-edit buffer, and reports best-or-tied results on all 52 (model, benchmark, harness) cells - including the Claude Code harness - at zero added inference-time cost. The takeaway for this scaffold: "evolve the skill" should mean "gated optimization against held-out tasks," not "ask the model to rewrite its own skill and hope."
+[SkillOpt](https://arxiv.org/abs/2605.23904) (May 2026) pushes this one step further: instead of one-shot proposal plus loose self-revision, it treats the skill document as the *trainable external state* of a frozen agent and runs a separate optimizer model that turns scored rollouts into bounded add/delete/replace edits - accepting an edit only when it strictly improves a held-out validation score. That validation gate is the same discipline our PROPOSE -> VALIDATE pipeline above enforces (and the broader principle in [[07 - Verification Gates and Layered Control]]); SkillOpt formalises it as a textbook optimizer loop with a learning-rate budget and a rejected-edit buffer, and reports best-or-tied results on all 52 (model, benchmark, harness) cells - including the Claude Code harness - at zero added inference-time cost. The takeaway for this scaffold: "evolve the skill" should mean "gated optimization against held-out tasks," not "ask the model to rewrite its own skill and hope." In the lab, this loop is `optimize_skill(skill, propose=proposer, evaluate=evaluator, gate=gate, baseline_score=score, epochs=N, out_dir=SKILLS_DIR, library=lib)` from `agentkit.skills` — it writes the best body to `out_dir/<name>.json` and `.md` as the deployable artifact, with the baseline-vs-optimized delta captured in the returned `OptimizeResult`.
 
 ---
 

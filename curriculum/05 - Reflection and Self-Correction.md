@@ -178,6 +178,13 @@ For the lab in this module, option 1 is used. Option 2 is the production recomme
 
 The lab builds on `memory/store.py` (Module 04) and `backends/adapter.py`.
 
+> [!info] In the lab: this is `agentkit.evolve`
+> The scaffold delegates the reflect->learn link to **`agentkit.evolve`** (available at [github.com/shaneliuyx/agentkit](https://github.com/shaneliuyx/agentkit)):
+> - **Group-relative lesson extraction** (`distill_group`) scores N rollouts with a verifier, keeps natural-language lessons only from rollouts that strictly beat the group mean, and demotes below-mean rollouts to counter-lessons. This is the REFLECT->LEARN bridge.
+> - **Weakness-targeted prompt evolution** (`evolve_prompt`) proposes mutations that focus on the current prompt's failure modes — reflection feeds the optimizer directly.
+> - The keep/discard control is **deterministic and model-free**; the injected LLM is only the mutation proposer. Every candidate is admitted solely through the LEARN `Gate` ([[07 - Verification Gates and Layered Control]]).
+> - The whole agent is `agentkit.SelfImprovingAgent` wired in `scaffold/lab_agent.py`.
+
 ### Step 1 - Set up your environment
 
 ```bash
@@ -185,6 +192,7 @@ cd /Users/yuxinliu/self-improving-agent-lab
 source .venv/bin/activate
 cp .env.example .env
 # Set AGENT_BACKEND=omlx or AGENT_BACKEND=vibeproxy in .env
+pip install "git+https://github.com/shaneliuyx/agentkit"  # provides agentkit.evolve
 ```
 
 ### Step 2 - Implement `reflection/reflect.py`
@@ -192,8 +200,12 @@ cp .env.example .env
 ```python
 # reflection/reflect.py
 """
-REFLECT step: critique a trajectory + outcome, extract structured lessons,
-write accepted lessons to the memory store.
+REFLECT step: critique a group of trajectories, extract group-relative lessons,
+and (optionally) run weakness-targeted prompt evolution.
+
+Delegates to agentkit.evolve:
+  - distill_group()  -> group-relative lesson extraction (the reflect->learn link)
+  - evolve_prompt()  -> weakness-targeted prompt evolution feeding the LEARN step
 
 Works on both backends:
   AGENT_BACKEND=omlx       -> http://localhost:8000/v1
@@ -207,10 +219,19 @@ from __future__ import annotations
 
 import json
 import os
-from dataclasses import dataclass, asdict
 from typing import Optional
 
 from openai import OpenAI
+
+from agentkit.evolve import (
+    distill_group,
+    evolve_prompt,
+    make_llm_proposer,
+    GroupDistillation,
+    OptimizeResult,
+    Rollout,
+    Verifier,
+)
 
 # --- unified adapter (see backends/adapter.py) ---
 BACKENDS = {
@@ -227,200 +248,143 @@ def _embed(text: str) -> list[float]:
     emb = OpenAI(base_url="http://localhost:8000/v1", api_key="not-needed")
     return emb.embeddings.create(model="nomic-embed-text", input=text).data[0].embedding
 
-# --- data model ---
-@dataclass
-class Lesson:
-    summary: str
-    failure_mode: Optional[str]
-    heuristics: list[str]
-    anti_patterns: list[str]
-    confidence: float
-    source_trajectory_id: str
 
-CRITIQUE_SYSTEM = """You are a trajectory analyst for a self-improving AI agent.
-Analyse the trajectory and outcome provided. Respond ONLY with valid JSON matching
-this exact schema (no markdown fences, no extra keys):
-{
-  "summary": "<one sentence>",
-  "failure_mode": "<specific description or null>",
-  "heuristics": ["<rule>", ...],
-  "anti_patterns": ["<anti-pattern>", ...],
-  "confidence": <float 0.0-1.0>
-}
-Heuristics must be specific and actionable, not generic advice.
-Confidence should be LOW (< 0.5) if the outcome is ambiguous or the trajectory is short."""
-
-CRITIQUE_USER = """Trajectory (JSON):
-{trajectory}
-
-Outcome:
-{outcome}"""
-
-def critique(
-    trajectory: dict,
-    outcome: str,
-    trajectory_id: str,
-    confidence_threshold: float = 0.6,
-    backend: Optional[str] = None,
-) -> Optional[Lesson]:
-    """
-    Run a single self-critique pass. Returns a Lesson if confidence >= threshold,
-    else returns None (lesson discarded).
-    """
-    client, model = make_client(backend)
-
-    response = client.chat.completions.create(
-        model=model,
-        messages=[
-            {"role": "system", "content": CRITIQUE_SYSTEM},
-            {"role": "user",   "content": CRITIQUE_USER.format(
-                trajectory=json.dumps(trajectory, indent=2),
-                outcome=outcome,
-            )},
-        ],
-        temperature=0.2,  # low temperature for consistent structured output
-    )
-
-    raw = response.choices[0].message.content.strip()
-
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError as exc:
-        print(f"[reflect] JSON parse error: {exc}\nRaw output:\n{raw}")
-        return None
-
-    lesson = Lesson(
-        summary=data.get("summary", ""),
-        failure_mode=data.get("failure_mode"),
-        heuristics=data.get("heuristics", []),
-        anti_patterns=data.get("anti_patterns", []),
-        confidence=float(data.get("confidence", 0.0)),
-        source_trajectory_id=trajectory_id,
-    )
-
-    if lesson.confidence < confidence_threshold:
-        print(f"[reflect] Lesson discarded (confidence={lesson.confidence:.2f} < {confidence_threshold})")
-        return None
-
-    return lesson
-
-
-def cross_critique(
-    trajectory: dict,
-    outcome: str,
-    trajectory_id: str,
-    confidence_threshold: float = 0.6,
-) -> Optional[Lesson]:
-    """
-    Multi-agent cross-critique: run two independent critique passes.
-    Accept only if BOTH passes return a lesson AND their heuristic sets overlap.
-    This implements the 'agents bully each other' pattern to reduce drift.
-
-    Pass 1: primary backend (AGENT_BACKEND env var)
-    Pass 2: omlx (always local, independent temperature seed)
-    """
-    lesson_a = critique(trajectory, outcome, trajectory_id, confidence_threshold)
-    lesson_b = critique(trajectory, outcome, trajectory_id, confidence_threshold, backend="omlx")
-
-    if lesson_a is None or lesson_b is None:
-        print("[reflect] Cross-critique: one pass returned no lesson - discarding.")
-        return None
-
-    # Simple overlap check: at least one heuristic substring matches
-    set_a = {h.lower() for h in lesson_a.heuristics}
-    set_b = {h.lower() for h in lesson_b.heuristics}
-    overlap = any(
-        any(word in b for word in a.split() if len(word) > 4)
-        for a in set_a for b in set_b
-    )
-
-    if not overlap:
-        print("[reflect] Cross-critique: lessons diverge - discarding both.")
-        return None
-
-    # Return the higher-confidence lesson
-    return lesson_a if lesson_a.confidence >= lesson_b.confidence else lesson_b
-
-
-def write_lesson_to_store(lesson: Lesson, store_path: str = "memory/lessons.jsonl") -> None:
-    """
-    Append an accepted lesson to the flat JSONL lesson store.
-    In production, also embed and upsert to the vector store (memory/store.py).
-    """
-    os.makedirs(os.path.dirname(store_path), exist_ok=True)
-    record = asdict(lesson)
-    record["embedding"] = _embed(lesson.summary + " " + " ".join(lesson.heuristics))
-    with open(store_path, "a") as f:
-        f.write(json.dumps(record) + "\n")
-    print(f"[reflect] Lesson written to {store_path}: {lesson.summary[:60]}...")
-
-
-def reflect(
-    trajectory: dict,
-    outcome: str,
-    trajectory_id: str,
-    use_cross_critique: bool = True,
-    confidence_threshold: float = 0.6,
+def reflect_group(
+    rollouts: list[Rollout],
+    verifier: Verifier,
     store_path: str = "memory/lessons.jsonl",
-) -> Optional[Lesson]:
+) -> GroupDistillation:
     """
-    Top-level REFLECT entry point.
-    Call with use_cross_critique=True for production; False for fast dev iteration.
+    Group-relative REFLECT step (the reflect->learn link).
+
+    distill_group() scores all rollouts with the verifier, keeps natural-language
+    lessons only from rollouts that strictly beat the group mean, and demotes
+    below-mean rollouts to counter-lessons ("what NOT to do").
+
+    The keep/discard decision is deterministic and model-free — the LLM is not
+    involved in the gate; it only produces candidate lesson text.
+    Accepted lessons are written to the flat JSONL lesson store.
     """
-    if use_cross_critique:
-        lesson = cross_critique(trajectory, outcome, trajectory_id, confidence_threshold)
-    else:
-        lesson = critique(trajectory, outcome, trajectory_id, confidence_threshold)
+    distillation: GroupDistillation = distill_group(rollouts, verifier=verifier)
 
-    if lesson is not None:
-        write_lesson_to_store(lesson, store_path)
+    os.makedirs(os.path.dirname(store_path) or ".", exist_ok=True)
+    for lesson in distillation.lessons:
+        record = {
+            "text": lesson,
+            "embedding": _embed(lesson),
+            "source": "distill_group",
+        }
+        with open(store_path, "a") as f:
+            f.write(json.dumps(record) + "\n")
+        print(f"[reflect] Lesson written: {lesson[:80]}...")
 
-    return lesson
+    for counter in distillation.counter_lessons:
+        print(f"[reflect] Counter-lesson (what NOT to do): {counter[:80]}...")
+
+    return distillation
+
+
+def reflect_and_evolve(
+    baseline_prompt: str,
+    rollouts: list[Rollout],
+    verifier: Verifier,
+    gate,
+    baseline_score: float,
+    epochs: int = 5,
+    cwd: str = ".",
+) -> OptimizeResult:
+    """
+    Full reflect->learn pipeline: group-relative lesson extraction feeding
+    weakness-targeted prompt evolution.
+
+    evolve_prompt() focuses mutation proposals on the failure modes where the
+    current best prompt is weakest — reflection steers the optimizer.
+    The gate (from agentkit, see [[07 - Verification Gates and Layered Control]])
+    is the only admittance criterion; it is deterministic and model-free.
+    """
+    client, model = make_client()
+    propose = make_llm_proposer(client=client, model=model)
+
+    result: OptimizeResult = evolve_prompt(
+        baseline_prompt,
+        propose=propose,
+        evaluate=verifier,
+        gate=gate,
+        baseline_score=baseline_score,
+        epochs=epochs,
+        cwd=cwd,
+    )
+
+    print(f"[reflect] evolve_prompt complete: delta={result.delta:+.3f}")
+    print(f"[reflect] Best prompt (first 120 chars): {result.best[:120]}...")
+    return result
 ```
 
 ### Step 3 - Run the lab
 
 ```python
-# Run from the repo root: python -c "from reflection.reflect import reflect; ..."
-# or add this to a scratch script.
+# Run from the repo root as a scratch script.
 
-example_trajectory = {
-    "task": "Write a Python function to parse ISO 8601 dates",
-    "steps": [
-        {"tool": "write_code", "input": "def parse_date(s): return datetime.fromisoformat(s)"},
-        {"tool": "run_tests",  "output": "FAILED: timezone-aware strings not handled"},
-        {"tool": "write_code", "input": "def parse_date(s): return datetime.fromisoformat(s.replace('Z', '+00:00'))"},
-        {"tool": "run_tests",  "output": "PASSED"},
-    ],
-    "final_code": "def parse_date(s): return datetime.fromisoformat(s.replace('Z', '+00:00'))",
-}
+from agentkit.evolve import Rollout, Verifier
 
-example_outcome = "PASS - all 8 test cases green after 2 attempts"
+# Build example rollouts: each is a (trajectory, outcome) pair
+rollouts = [
+    Rollout(
+        trajectory={
+            "task": "Write a Python function to parse ISO 8601 dates",
+            "steps": [
+                {"tool": "write_code", "input": "def parse_date(s): return datetime.fromisoformat(s)"},
+                {"tool": "run_tests",  "output": "FAILED: timezone-aware strings not handled"},
+                {"tool": "write_code", "input": "def parse_date(s): return datetime.fromisoformat(s.replace('Z', '+00:00'))"},
+                {"tool": "run_tests",  "output": "PASSED"},
+            ],
+        },
+        outcome="PASS - all 8 test cases green after 2 attempts",
+    ),
+    Rollout(
+        trajectory={
+            "task": "Write a Python function to parse ISO 8601 dates",
+            "steps": [
+                {"tool": "write_code", "input": "def parse_date(s): return s"},
+                {"tool": "run_tests",  "output": "FAILED: returned string, not datetime"},
+            ],
+        },
+        outcome="FAIL - type mismatch",
+    ),
+]
 
-from reflection.reflect import reflect
+# Verifier scores each rollout (deterministic, model-free)
+def outcome_verifier(rollout: Rollout) -> float:
+    return 1.0 if rollout.outcome.startswith("PASS") else 0.0
 
-lesson = reflect(
-    trajectory=example_trajectory,
-    outcome=example_outcome,
-    trajectory_id="run-20260531-001",
-    use_cross_critique=False,   # single pass for dev speed; set True for production
+from reflection.reflect import reflect_group
+
+distillation = reflect_group(
+    rollouts=rollouts,
+    verifier=outcome_verifier,
 )
 
-if lesson:
-    print("Heuristics extracted:")
-    for h in lesson.heuristics:
-        print(f"  - {h}")
+print("Lessons (above-group-mean rollouts):")
+for lesson in distillation.lessons:
+    print(f"  + {lesson}")
+
+print("Counter-lessons (below-group-mean):")
+for counter in distillation.counter_lessons:
+    print(f"  - {counter}")
 ```
 
 **Expected output** (model-dependent, illustrative):
 
 ```
-[reflect] Lesson written to memory/lessons.jsonl: Python date parsing...
-Heuristics extracted:
-  - Always handle timezone suffix variants before calling fromisoformat
-  - Write a test that includes a Z-suffix date as a fixture for any date parser
-  - Prefer replace-then-parse over regex for simple timezone normalization
+[reflect] Lesson written: Always handle timezone suffix variants before calling fromisoformat...
+[reflect] Counter-lesson (what NOT to do): Returning the raw string instead of a parsed datetime...
+Lessons (above-group-mean rollouts):
+  + Always handle timezone suffix variants before calling fromisoformat
+Counter-lessons (below-group-mean):
+  - Returning the raw string instead of a parsed datetime causes type mismatch failures
 ```
+
+Note: `distill_group` keeps lessons only from rollouts that **strictly beat the group mean score**. In this two-rollout example the PASS rollout (score 1.0) beats the mean (0.5), so its lesson is kept; the FAIL rollout (score 0.0) becomes a counter-lesson. With larger groups the threshold is more meaningful — this is the reflect->learn link described in Section 1.
 
 ### Step 4 - Switch backends
 
@@ -428,13 +392,13 @@ Heuristics extracted:
 # Run against VibeProxy (Claude subscription via local proxy)
 # Note: ToS caveat - using a subscription via proxy may violate your provider's ToS.
 AGENT_BACKEND=vibeproxy python -c "
-from reflection.reflect import reflect
+from reflection.reflect import reflect_group
 # ... same call as above
 "
 
 # Run against oMLX local model (no ToS concerns)
 AGENT_BACKEND=omlx python -c "
-from reflection.reflect import reflect
+from reflection.reflect import reflect_group
 # ...
 "
 ```

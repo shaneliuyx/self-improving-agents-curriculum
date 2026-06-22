@@ -140,13 +140,18 @@ The [[10 - Evaluation Harness]] module covers building eval sets. The [[09 - San
 The runnable lab uses two scaffold paths:
 
 ```
-evolve/loop.py       # the keep/discard loop
-evolve/archive/      # persisted variants as JSON files
+evolve/loop.py       # delegates to agentkit.evolve (keep/discard loop)
 evals/tasks.py       # the fixed eval set
 evals/run.py         # runner that scores a variant
+scaffold/lab_agent.py  # SelfImprovingAgent.improve() surface
 ```
 
-The `evolve/archive/` directory stores variant files named `v{n}.json` with fields: `system_prompt`, `score`, `parent_id`, `iteration`.
+The archive is managed internally by `agentkit.evolve`; accepted variants are written to disk as role config files (reviewed as a git diff before the agent reloads them).
+
+> [!info] In the lab: agentkit.evolve
+> The lab's `evolve/loop.py` delegates to `agentkit.evolve` — specifically `optimize_text` / `evolve_prompt` (labelled eval path) and `evolve_prompt_rho` (label-free, self-preference path). The keep/discard control is **deterministic and model-free**: the injected LLM is only the mutation proposer; every candidate is admitted solely through the LEARN `Gate` ([[07 - Verification Gates and Layered Control]]). The optimizer maintains a DGM-style open-ended archive of variants and does weakness-targeting internally.
+>
+> The high-level surface is `agent.improve(eval_set, role=..., epochs=...)` on `agentkit.SelfImprovingAgent`, which rewrites the role's config file on disk **only on ACCEPT** (review as a git diff). See `scaffold/lab_agent.py`.
 
 ---
 
@@ -192,26 +197,24 @@ TASKS = [
 ]
 ```
 
-### Step 2 - Eval Runner
+### Step 2 - Eval Runner and Gate
+
+The eval runner scores a candidate system prompt; the gate wraps the keep/discard decision. Both are passed into `agentkit.evolve` — the archive itself is managed internally by the library (DGM-style open-ended archive with weakness-targeting).
 
 ```python
 # evals/run.py
-import sys
-import os
+import sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
+from agentkit.evolve import Gate
 from backends.adapter import make_client
 from evals.tasks import TASKS
 
 
-def score_variant(system_prompt: str, backend: str = None) -> float:
-    """
-    Score a system prompt variant against the fixed eval set.
-    Returns fraction of tasks passed (0.0 - 1.0).
-    Uses the SMALL local model for cheap, fast evaluation.
-    """
-    # Always use oMLX for eval runs - cheap, local, no rate-limit pressure on VibeProxy
-    client, model = make_client("omlx")
+def score_variant(system_prompt: str, backend: str = "omlx") -> float:
+    """Score a system prompt against the fixed eval set (0.0 - 1.0).
+    Always uses the SMALL local model — cheap, fast, no VibeProxy rate pressure."""
+    client, model = make_client(backend)
     passed = 0
     for task in TASKS:
         resp = client.chat.completions.create(
@@ -227,201 +230,150 @@ def score_variant(system_prompt: str, backend: str = None) -> float:
         if all(kw.lower() in text for kw in task["must_contain"]):
             passed += 1
     return passed / len(TASKS)
+
+
+def make_gate() -> Gate:
+    """Return the LEARN Gate: admit a candidate only if its score beats the parent."""
+    # Gate.from_fn wraps a score-comparison predicate as an agentkit Gate object.
+    # The gate is deterministic and model-free — the LLM is never in the keep/discard path.
+    return Gate.from_fn(lambda candidate, parent: candidate.score > parent.score)
 ```
 
-### Step 3 - Archive Helpers
+### Step 3 - The Keep/Discard Loop (via agentkit.evolve)
 
-```python
-# evolve/archive/__init__.py
-import json
-import os
-from pathlib import Path
-
-ARCHIVE_DIR = Path(__file__).parent
-
-
-def load_archive() -> list[dict]:
-    variants = []
-    for f in sorted(ARCHIVE_DIR.glob("v*.json")):
-        variants.append(json.loads(f.read_text()))
-    return variants
-
-
-def save_variant(variant: dict) -> None:
-    n = len(list(ARCHIVE_DIR.glob("v*.json")))
-    path = ARCHIVE_DIR / f"v{n:04d}.json"
-    path.write_text(json.dumps(variant, indent=2))
-
-
-def best_variant(archive: list[dict]) -> dict:
-    return max(archive, key=lambda v: v["score"])
-```
-
-### Step 4 - The Keep/Discard Loop
+`evolve/loop.py` delegates to `agentkit.evolve`. The LLM is wired in only as the **mutation proposer**; keep/discard is fully deterministic via the LEARN `Gate`.
 
 ```python
 # evolve/loop.py
 """
-Minimal DGM-style keep/discard self-modification loop.
-- Uses the LARGE model to propose mutations (VibeProxy=claude-sonnet, oMLX=qwen-72b)
-- Uses the SMALL local model for eval runs (always oMLX qwen2.5-coder-7b)
+DGM-style keep/discard self-modification loop using agentkit.evolve.
+- make_llm_proposer wires the LARGE model as the mutation proposer only
+- The LEARN Gate (deterministic, model-free) controls keep/discard
+- evolve_prompt runs the open-ended archive loop and returns OptimizeResult
 
 Run:
-    AGENT_BACKEND=vibeproxy python evolve/loop.py --iterations 5
-    AGENT_BACKEND=omlx      python evolve/loop.py --iterations 5
+    AGENT_BACKEND=vibeproxy python evolve/loop.py --epochs 5
+    AGENT_BACKEND=omlx      python evolve/loop.py --epochs 5
 """
 
 import argparse
-import json
 import os
 import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
+from agentkit.evolve import evolve_prompt, make_llm_proposer, OptimizeResult
 from backends.adapter import make_client
-from evolve.archive import load_archive, save_variant, best_variant
-from evals.run import score_variant
+from evals.run import score_variant, make_gate
 
 SEED_PROMPT = """You are a helpful Python tutor. Answer questions about Python
 concisely and accurately. Include code examples when they clarify your answer."""
 
-MUTATION_META_PROMPT = """\
-You are a prompt engineer. Below is a system prompt used by a Python tutor agent
-and its current benchmark score (fraction of 5 test cases passed).
 
-Current system prompt:
----
-{current_prompt}
----
-Current score: {score:.2f}
+def run_loop(epochs: int, backend: str) -> None:
+    # Mutation proposer: large model via VibeProxy or oMLX
+    propose_client, propose_model = make_client(backend)
+    proposer = make_llm_proposer(propose_client, model=propose_model)
 
-Propose ONE targeted improvement to the system prompt that might increase the score.
-Respond with ONLY the new system prompt - no explanation, no preamble, no markdown fences.
-The new prompt must be a complete replacement, not a diff."""
+    # Evaluator: small local model scores each candidate (0.0 - 1.0)
+    def evaluate(prompt: str) -> float:
+        return score_variant(prompt, backend="omlx")
 
+    # Gate: LEARN Gate — candidate admitted only if score > parent score
+    gate = make_gate()
 
-def propose_mutation(current_prompt: str, score: float, backend: str) -> str:
-    """Use the large model to propose a mutated system prompt."""
-    client, model = make_client(backend)
-    resp = client.chat.completions.create(
-        model=model,
-        messages=[
-            {
-                "role": "user",
-                "content": MUTATION_META_PROMPT.format(
-                    current_prompt=current_prompt, score=score
-                ),
-            }
-        ],
-        max_tokens=512,
-        temperature=0.8,  # some creativity for mutations
+    baseline_score = evaluate(SEED_PROMPT)
+    print(f"Baseline score: {baseline_score:.2f}")
+
+    result: OptimizeResult = evolve_prompt(
+        SEED_PROMPT,
+        propose=proposer,
+        evaluate=evaluate,
+        gate=gate,
+        baseline_score=baseline_score,
+        epochs=epochs,
+        cwd=".",
     )
-    return resp.choices[0].message.content.strip()
 
-
-def run_loop(iterations: int, backend: str) -> None:
-    archive = load_archive()
-
-    # Seed the archive if empty
-    if not archive:
-        print("Seeding archive with v0000...")
-        seed_score = score_variant(SEED_PROMPT)
-        seed = {
-            "id": "v0000",
-            "system_prompt": SEED_PROMPT,
-            "score": seed_score,
-            "parent_id": None,
-            "iteration": 0,
-        }
-        save_variant(seed)
-        archive = [seed]
-        print(f"Seed score: {seed_score:.2f}")
-
-    for i in range(1, iterations + 1):
-        parent = best_variant(archive)
-        print(f"\n--- Iteration {i} | parent={parent['id']} score={parent['score']:.2f} ---")
-
-        # Propose mutation using the large model
-        print(f"Proposing mutation via {backend}...")
-        mutated_prompt = propose_mutation(parent["system_prompt"], parent["score"], backend)
-
-        # Evaluate mutation using the small local model
-        print("Evaluating mutation via oMLX (small model)...")
-        new_score = score_variant(mutated_prompt, backend="omlx")
-        print(f"Mutation score: {new_score:.2f}")
-
-        if new_score > parent["score"]:
-            n = len(archive)
-            variant_id = f"v{n:04d}"
-            variant = {
-                "id": variant_id,
-                "system_prompt": mutated_prompt,
-                "score": new_score,
-                "parent_id": parent["id"],
-                "iteration": i,
-            }
-            save_variant(variant)
-            archive.append(variant)
-            print(f"KEPT as {variant_id} (improvement: +{new_score - parent['score']:.2f})")
-        else:
-            print(f"DISCARDED (no improvement over {parent['score']:.2f})")
-
-    final = best_variant(archive)
-    print(f"\nFinal best: {final['id']} score={final['score']:.2f}")
-    print("System prompt:")
-    print(final["system_prompt"])
+    print(f"\nDelta: {result.delta:+.2f}")
+    if result.best is not None:
+        print(f"Best variant score: {result.best.score:.2f}")
+        print("Best system prompt:")
+        print(result.best.artifact)
+    else:
+        print("No improvement found — baseline retained.")
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--iterations", type=int, default=5)
+    parser.add_argument("--epochs", type=int, default=5)
     args = parser.parse_args()
     backend = os.getenv("AGENT_BACKEND", "omlx")
-    run_loop(args.iterations, backend)
+    run_loop(args.epochs, backend)
+```
+
+**Label-free (RHO) path** — when you have no eval labels, replace `evolve_prompt` with `evolve_prompt_rho`. The keep/discard decision becomes the agent's own pairwise self-preference (re-judged each epoch); the same gate still applies:
+
+```python
+from agentkit.evolve import evolve_prompt_rho
+
+# judge_inputs: raw user queries the agent will compare its own outputs on
+judge_inputs = [task["user"] for task in TASKS]
+
+result: OptimizeResult = evolve_prompt_rho(
+    SEED_PROMPT,
+    propose=proposer,
+    gate=gate,
+    client=propose_client,
+    judge_inputs=judge_inputs,
+    epochs=epochs,
+    cwd=".",
+)
+```
+
+**High-level surface via SelfImprovingAgent** — `scaffold/lab_agent.py` wraps the above as a single method call. It rewrites the role's config file on disk only on ACCEPT (inspect the diff before the agent reloads):
+
+```python
+from agentkit import SelfImprovingAgent
+
+agent = SelfImprovingAgent.from_config("roles/python_tutor.yaml")
+result = agent.improve(eval_set=TASKS, role="python_tutor", epochs=5)
+# result.best is None if no variant passed the gate
+# On ACCEPT: roles/python_tutor.yaml is rewritten in-place (review as git diff)
+print(f"Improvement: {result.delta:+.2f}")
 ```
 
 ### Running the Lab
 
 ```bash
-# Using oMLX for both mutation proposals and eval (all local)
-AGENT_BACKEND=omlx python evolve/loop.py --iterations 5
+# All-local: oMLX for both mutation proposals and eval
+AGENT_BACKEND=omlx python evolve/loop.py --epochs 5
 
-# Using VibeProxy for mutation proposals, oMLX for eval (hybrid)
+# Hybrid: VibeProxy for mutation proposals, oMLX for eval
 # Note: VibeProxy routes your Claude MAX subscription via local proxy.
 # Using a subscription via proxy may violate provider ToS - check before use.
-AGENT_BACKEND=vibeproxy python evolve/loop.py --iterations 5
-
-# Inspect the archive after the run
-ls evolve/archive/
-cat evolve/archive/v0002.json
+AGENT_BACKEND=vibeproxy python evolve/loop.py --epochs 5
 ```
 
 Expected output pattern:
 
 ```
-Seeding archive with v0000...
-Seed score: 0.40
-
---- Iteration 1 | parent=v0000 score=0.40 ---
-Proposing mutation via omlx...
-Evaluating mutation via oMLX (small model)...
-Mutation score: 0.60
-KEPT as v0001 (improvement: +0.20)
-
---- Iteration 2 | parent=v0001 score=0.60 ---
-...
-DISCARDED (no improvement over 0.60)
+Baseline score: 0.40
+Delta: +0.20
+Best variant score: 0.60
+Best system prompt:
+You are a helpful Python tutor...
 ```
 
 > [!example] What Good Mutations Look Like
-> After a successful run, open `evolve/archive/v0002.json` and compare the system prompt to the seed. A typical improvement: the mutated prompt explicitly instructs the model to include `__exit__` in context manager explanations, or to always mention `:=` by name for walrus operator questions. These are targeted, verifiable changes - exactly the DGM pattern.
+> After a successful run, inspect `result.best.artifact` (or the rewritten role config file). A typical improvement: the mutated prompt explicitly instructs the model to include `__exit__` in context manager explanations, or to always mention `:=` by name for walrus operator questions. These are targeted, verifiable changes — exactly the DGM pattern. The gate ensures only verified improvements reach disk.
 
 ---
 
 ## 8. Pitfalls
 
 > [!warning] Pitfall 1 - The Eval Set Leaks Into the Mutation
-> If the large model can see the eval task text when proposing mutations, it will overfit the system prompt to the test cases. Keep `evals/tasks.py` out of the mutation meta-prompt. The `MUTATION_META_PROMPT` in the lab above shows only the current score, not the tasks. The [DGM paper](https://arxiv.org/abs/2505.22954) addresses this as "evaluation leakage" - use a held-out test set separate from the optimization target.
+> If the large model can see the eval task text when proposing mutations, it will overfit the system prompt to the test cases. Keep `evals/tasks.py` out of the proposer's context — `make_llm_proposer` receives only the current prompt and score, not the task inputs. The [DGM paper](https://arxiv.org/abs/2505.22954) addresses this as "evaluation leakage" - use a held-out test set separate from the optimization target.
 
 > [!warning] Pitfall 2 - Score Plateaus and Noise
 > With only 5 eval tasks, a single lucky run can score 1.0 trivially. Use at least 20-50 tasks for a meaningful signal. Also, LLM outputs are stochastic - run each variant 3 times and average the scores before making a keep/discard decision. See [[10 - Evaluation Harness]] for proper eval design.
