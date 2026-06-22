@@ -144,12 +144,14 @@ def _build_system_prompt() -> str:
 # Main loop (delegates to agentkit.agent.run_agent)
 # ---------------------------------------------------------------------------
 
-def _make_routed_client(backend: str | None, difficulty: str) -> Any:
+def _make_routed_client(backend: str | None, difficulty: str) -> tuple[Any, str]:
     """Build the agentkit ``LLMClient`` for this run (lab routing on top).
 
     Difficulty routing picks the model; ``backend`` forces a specific endpoint.
     ``OMLXClient`` is an OpenAI-compatible adapter, so it serves any of the lab's
     backends (oMLX :8000 / VibeProxy :8317) by base_url + model.
+
+    Returns (client, effective_backend) so the caller knows which backend is active.
     """
     from backends.adapter import BACKENDS, OMLXClient
 
@@ -159,7 +161,7 @@ def _make_routed_client(backend: str | None, difficulty: str) -> Any:
     # Honor the routed model unless the caller forced a different backend (where
     # the routed model may not exist; fall back to that backend's default).
     model = route_decision.model if backend is None else cfg["model"]
-    return OMLXClient(model=model, base_url=cfg["base_url"])
+    return OMLXClient(model=model, base_url=cfg["base_url"]), effective_backend
 
 
 def run_agent(
@@ -198,8 +200,18 @@ def run_agent(
     # Describe the lab tools in-prompt: the agentkit OMLXClient doesn't forward
     # the tools schema to the API, so the local model needs them here to emit the
     # text tool-call agentkit's loop parses.
-    sys_prompt = f"{sys_prompt}{_tool_use_instructions()}"
-    client = _make_routed_client(backend, difficulty)
+    full_instructions = f"{sys_prompt}{_tool_use_instructions()}"
+    client, effective_backend = _make_routed_client(backend, difficulty)
+
+    # VibeProxy (Claude via subscription proxy) does not support the system role —
+    # it silently drops the system message. Move all instructions into the user
+    # turn so the model actually receives them.
+    if effective_backend == "vibeproxy":
+        agentkit_system = ""
+        agentkit_task = f"{full_instructions}\n\n---\n\n{task}"
+    else:
+        agentkit_system = full_instructions
+        agentkit_task = task
 
     # Optional durable run log (observability + replay substrate). Off by default
     # so the test suite doesn't litter logs/; scripts/go turns it on.
@@ -208,15 +220,15 @@ def run_agent(
         import uuid
         from agent.runlog import RunLogger
         logger = RunLogger(run_id=uuid.uuid4().hex[:8])
-        logger.run_start(task, backend or route(difficulty).backend, getattr(client, "model", ""))
+        logger.run_start(task, effective_backend, getattr(client, "model", ""))
 
     # Delegate the loop. agentkit appends memory context, runs the structured +
     # text tool-call paths, and quarantines untrusted tool output internally.
     ak = _agentkit_run_agent(
-        task,
+        agentkit_task,
         client,
         tools=_LabToolRegistry(),
-        system_prompt=sys_prompt,
+        system_prompt=agentkit_system,
         max_rounds=max_r,
         memory=memory,
     )
@@ -242,7 +254,7 @@ def run_agent(
                        total_usage={"total_tokens": getattr(ak, "total_tokens", 0)})
 
     return AgentResult(
-        task=ak.task,
+        task=task,  # always the original task, not the vibeproxy-prepended variant
         answer=ak.answer,
         trajectory=trajectory,
         success=ak.success,
