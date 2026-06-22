@@ -110,10 +110,19 @@ bash install.sh                              # tooling + scaffold
 VAULT_DIR="/path/to/your/vault" bash install.sh
 ```
 
+> **Prerequisite — [`agentkit`](https://github.com/shaneliuyx/agentkit).** The lab agent is
+> **built on agentkit**: `scaffold/lab_agent.py` is `agentkit.SelfImprovingAgent.from_config(...)`,
+> and the lab's `memory` / `gates` / `evolve` / `skills` / `agent` modules delegate to it. Install
+> it first (it is not on PyPI — use the git URL):
+> ```bash
+> pip install "git+https://github.com/shaneliuyx/agentkit"
+> ```
+> `scaffold/requirements.txt` also pins it, so `pip install -e scaffold` pulls it in automatically.
+
 ### 2. Start a backend
 
-- **Local:** install [oMLX](https://omlx.ai), download a chat model (e.g. `Qwen2.5-Coder-7B`)
-  and an embedding model (`nomic-embed-text`), click **Start Server** (`:8000`).
+- **Local:** install [oMLX](https://omlx.ai), download a chat model (e.g. `Qwen2.5-Coder-7B-Instruct-MLX-4bit`)
+  and an embedding model (`bge-m3-mlx-fp16`), click **Start Server** (`:8000`).
 - **Claude MAX:** install [VibeProxy](https://github.com/automazeio/vibeproxy), sign in with
   your subscription (`:8317`). *(Note: using a subscription via proxy may violate provider ToS.)*
 
