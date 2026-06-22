@@ -59,6 +59,16 @@ solid from-scratch repos). What this curriculum does that they don't:
 - **A curriculum that refreshes itself.** The `/improve-curriculum` command mines the last
   30 days of research (arXiv, GitHub, HN) and updates the notes + scaffold, so citations
   don't rot. (This repo is itself maintained that way.)
+- **Built on a real, extracted library — not throwaway scaffolding.** The lab agent is composed on
+  [`agentkit`](https://github.com/shaneliuyx/agentkit), a lean agent-systems library *extracted and
+  hardened from this very lab*. Its design is the lab's design made production-grade: a
+  **deterministic-first axiom** (a cheap, model-free stage gates every LLM call, so most work never
+  reaches the model), a **non-overridable LEARN gate + sandbox** the agent edits its own config
+  behind (the VERIFY thesis as code — the safety LLM is a veto, never a vote), **config-as-policy**
+  (roles/tools/topology are files the agent can improve on its own), and **Protocol seams** so the
+  same code runs on oMLX, Claude, or a fake — no vendor lock-in. You learn each concept from scratch,
+  then graduate onto the library. See [`agentkit`'s README](https://github.com/shaneliuyx/agentkit)
+  for the full 18-module map.
 
 ---
 
