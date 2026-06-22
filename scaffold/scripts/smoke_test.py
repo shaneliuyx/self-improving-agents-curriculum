@@ -1,19 +1,57 @@
 # scripts/smoke_test.py
-# Smoke test: verify both backends respond and embeddings work locally.
-# Reconciled from:
-#   - note 00 (scripts/smoke_test.py): ping(backend) / ping_embeddings() style
-#   - note 02 (labs/02_smoke_test.py): richer test_chat / test_embeddings / test_model_routing style
+# Smoke test for the lab agent built on agentkit.
+#
+#   test_lab_agent_offline  ALWAYS runs (no network): composes the agentkit-based
+#                           SelfImprovingAgent with a FAKE LLMClient and proves
+#                           the wiring runs end-to-end.
+#   test_chat / test_embeddings / test_model_routing  need a REAL backend up.
 #
 # Run with:
+#   python scripts/smoke_test.py                      # offline check always runs
 #   AGENT_BACKEND=omlx      python scripts/smoke_test.py
 #   AGENT_BACKEND=vibeproxy python scripts/smoke_test.py
 
 import os
 import sys
+from pathlib import Path
+
+# Allow `python scripts/smoke_test.py` from the repo root (project root on path).
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 from openai import OpenAI
 from backends.adapter import make_client
 
 PROMPT = "Reply with exactly one sentence: what is 2 + 2 and why?"
+
+
+class _FakeClient:
+    """A no-network agentkit ``LLMClient`` for the offline composition check."""
+
+    def chat(self, messages, tools=None):
+        from agentkit.types import ChatResult
+        return ChatResult(text="The answer is 391.", total_tokens=0)
+
+
+def test_lab_agent_offline():
+    """Compose the agentkit-based lab agent with a fake client - NO network.
+
+    Proves the refactor's central claim: the lab agent IS agentkit's
+    SelfImprovingAgent, wired by lab_agent.build_lab_agent, and it runs.
+    """
+    import tempfile
+    from lab_agent import build_lab_agent, lab_eval_set
+
+    print("\n[Lab agent on agentkit] offline composition (fake client)")
+    cfg = tempfile.mkdtemp()
+    agent = build_lab_agent(backend=_FakeClient(), with_memory=False, config_dir=cfg)
+    print(f"  roles loaded: {sorted(agent.roles)}")
+    result = agent.run("What is 17 * 23? Use the calculator tool.")
+    print(f"  run answer: {result.answer!r}")
+    assert result.answer, "agent.run returned an empty answer"
+    pairs = lab_eval_set()
+    assert pairs and all(len(p) == 2 for p in pairs), "eval set malformed"
+    print(f"  eval set: {len(pairs)} (task, expected) pairs")
+    print("  PASS")
 
 
 def test_chat():
@@ -58,7 +96,8 @@ def test_model_routing():
 
 if __name__ == "__main__":
     errors = []
-    for test_fn in (test_chat, test_embeddings, test_model_routing):
+    # Offline composition check first (always runs), then the real-backend tests.
+    for test_fn in (test_lab_agent_offline, test_chat, test_embeddings, test_model_routing):
         try:
             test_fn()
         except Exception as e:

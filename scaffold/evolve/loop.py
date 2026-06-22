@@ -3,37 +3,31 @@ evolve/loop.py - DGM-style system-prompt evolution loop.
 
 Inspired by the Darwin Gödel Machine (https://arxiv.org/abs/2505.22954) but
 applied ONLY to the agent's SYSTEM PROMPT (not weights or code), making it
-safe and reversible. Weight/code self-modification is reserved for narrow,
-benchmarkable, sandboxed sub-problems (curriculum thesis: camp 2 + VERIFY).
+safe and reversible.
 
-Algorithm (keep/discard):
-  1. Sample a parent system prompt from the archive (or use the baseline).
-  2. Ask the LLM to propose one targeted mutation.
-  3. Evaluate the mutated prompt on the eval task set.
-  4. If strictly better than the current best: add to archive, update best.
-  5. Otherwise: discard.
-  6. Append the result to evolve/archive/ for auditability.
+THIS IS A FACADE OVER agentkit. The keep/discard CONTROL is NOT hand-rolled
+here any more:
 
-Every accepted variant is committed via scripts/commit so the improvement
-history is fully revertible.
+  * ``run_evolution_step`` delegates one epoch to ``agentkit.evolve.evolve_prompt``
+    (``optimize_text`` over a system prompt), admitting the candidate solely
+    through agentkit's LEARN ``Gate``. The lab's archive directory + the
+    weakness-targeted proposer stay on top (agentkit keeps its archive in memory;
+    the lab persists each accepted variant as a git-revertible JSON file).
+  * ``run_retrospective_step`` (RHO, https://arxiv.org/abs/2606.05922) delegates
+    to ``agentkit.evolve.evolve_prompt_rho`` - the label-free self-preference loop
+    agentkit ported from this very module.
+  * ``mine_weaknesses`` (Self-Harness, https://arxiv.org/abs/2606.09498) is the
+    one lab-specific bit kept on top: it distils the lab's reflection ``Lessons``
+    into the ``weaknesses=`` string agentkit's ``make_llm_proposer`` targets.
 
-WARNING: This loop modifies the agent's own instructions. The verification
-gate (verification/gates.py) is the ONLY thing that prevents the agent from
-mutating itself into uselessness. Do not remove or skip the gate.
+The lab's public surface (``PromptVariant`` / ``EvolutionResult`` /
+``run_evolution_step`` / ``run_retrospective_step`` / ``mine_weaknesses`` /
+``self_preference`` / ``load_archive`` / ``best_variant``) is preserved so the
+behavior eval and the RHO demo keep working; only the BODIES delegate to agentkit.
 
-Two 2026 refinements ship here as opt-in modes (both additive, both keep the
-same accept-after-test discipline):
-
-  * Weakness-targeted proposal (Self-Harness, https://arxiv.org/abs/2606.09498):
-    pass `weaknesses=` (mined from reflection lessons or failed trajectories) so
-    the mutation targets observed failure patterns instead of mutating blind.
-    See `mine_weaknesses()` and the `weaknesses` argument of
-    `run_evolution_step()`. This closes the REFLECT -> LEARN link: reflection
-    output now steers the next mutation.
-  * Label-free self-preference (RHO, https://arxiv.org/abs/2606.05922): when you
-    have NO eval labels, `run_retrospective_step()` re-solves past tasks with the
-    baseline and the candidate and keeps the candidate only if the agent's own
-    pairwise self-preference favors it (the safety/containment gate still applies).
+WARNING: This loop modifies the agent's own instructions. agentkit's verification
+gate is the ONLY thing that prevents the agent from mutating itself into
+uselessness. Do not remove or skip the gate.
 """
 
 from __future__ import annotations
@@ -44,13 +38,20 @@ from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import Any
 
-from backends.adapter import chat, tool_call
-from backends.router import route
 from config import settings
+
+from agentkit.evolve import (
+    evolve_prompt,
+    make_llm_proposer,
+    optimize_text,
+    self_preference as _ak_self_preference,
+)
+from agentkit.gates import Gate
+from agentkit.sandbox import SubprocessSandbox
 
 
 # ---------------------------------------------------------------------------
-# Data structures
+# Data structures (the lab's public shape)
 # ---------------------------------------------------------------------------
 
 @dataclass
@@ -77,7 +78,8 @@ class EvolutionResult:
 
 
 # ---------------------------------------------------------------------------
-# Archive helpers
+# Archive helpers (lab-side persistence: agentkit keeps the archive in memory,
+# the lab writes each accepted variant as a git-revertible file for auditability)
 # ---------------------------------------------------------------------------
 
 def _archive_path(variant_id: str) -> Path:
@@ -90,14 +92,6 @@ def _save_variant(variant: PromptVariant) -> None:
     _archive_path(variant.variant_id).write_text(
         json.dumps(variant.to_dict(), indent=2), encoding="utf-8"
     )
-
-
-def _load_variant(variant_id: str) -> PromptVariant | None:
-    p = _archive_path(variant_id)
-    if not p.exists():
-        return None
-    data = json.loads(p.read_text(encoding="utf-8"))
-    return PromptVariant(**data)
 
 
 def load_archive() -> list[PromptVariant]:
@@ -120,276 +114,53 @@ def best_variant() -> PromptVariant | None:
 
 
 # ---------------------------------------------------------------------------
-# Mutation prompt
+# Backend wiring for agentkit's injected proposer / RHO client
 # ---------------------------------------------------------------------------
 
-_MUTATION_SYSTEM = """\
-You are a meta-optimizer for an AI agent system prompt.
+def _client(backend: str | None = None) -> Any:
+    """Build the agentkit ``LLMClient`` the proposer / RHO judge run on."""
+    from backends.adapter import BACKENDS, OMLXClient
+    from backends.router import route
 
-Given the current system prompt and its performance, propose ONE targeted
-mutation that might improve the agent's task success rate.
-
-Rules:
-- Make only ONE change (add a clarification, reorder instructions, add an
-  example, remove confusing text, etc.)
-- Never remove safety rules or verification gate instructions.
-- Never add instructions to call the internet or modify external files.
-- Keep the mutated prompt under 2000 characters.
-
-Output NOTHING but a single JSON object - no prose, no explanation, no markdown
-fences before or after. The very first character of your reply must be '{'.
-{
-  "mutation_note": "<one sentence describing the change>",
-  "mutated_prompt": "<the complete new system prompt>"
-}
-"""
-
-# Prefill fragment: the model's reply continues from here, so it cannot preamble
-# or rename keys. Kept in sync with the schema in _MUTATION_SYSTEM above.
-_MUTATION_PREFILL = '{\n  "mutation_note": "'
+    eff = backend or route("hard").backend
+    cfg = BACKENDS[eff]
+    return OMLXClient(model=cfg["model"], base_url=cfg["base_url"])
 
 
-def _extract_json_obj(raw: str) -> dict[str, Any] | None:
-    """Best-effort JSON-object extraction from a model response.
+def _gate(evaluator: Any, client: Any | None = None) -> Gate:
+    """agentkit's LEARN gate, jailed to the archive dir for sandbox execution.
 
-    Chatty models (e.g. Claude via VibeProxy) often wrap JSON in prose and
-    markdown fences instead of returning a bare object. Try, in order:
-      1. json.loads on the whole (stripped, de-fenced) text,
-      2. json.loads on the first balanced {...} substring.
-    Returns the dict, or None if nothing parses.
+    agentkit's ``optimize_text`` admits each candidate via ``gate.run_gate`` and
+    the gate's OWN evaluator is what its regression/delta stages score against -
+    so the gate evaluator must be the same scoring the loop ranks by. The gate
+    evaluator receives the proposal DICT, so it reads ``proposal["content"]``.
     """
-    text = raw.strip()
-    if "```" in text:  # strip any ``` / ```json fences
-        text = "\n".join(l for l in text.split("\n") if not l.strip().startswith("```")).strip()
-    try:
-        obj = json.loads(text)
-        if isinstance(obj, dict):
-            return obj
-    except json.JSONDecodeError:
-        pass
-    # Fallback: scan for the first balanced top-level {...} block.
-    start = text.find("{")
-    while start != -1:
-        depth = 0
-        for i in range(start, len(text)):
-            if text[i] == "{":
-                depth += 1
-            elif text[i] == "}":
-                depth -= 1
-                if depth == 0:
-                    try:
-                        obj = json.loads(text[start:i + 1])
-                        if isinstance(obj, dict):
-                            return obj
-                    except json.JSONDecodeError:
-                        break  # not valid; advance to next "{"
-        start = text.find("{", start + 1)
-    return None
-
-
-def _propose_mutation(
-    parent: PromptVariant,
-    weaknesses: str | None = None,
-) -> tuple[str, str] | None:
-    """
-    Ask the LLM to propose one mutation of a parent prompt.
-
-    Args:
-        parent:     The prompt variant to mutate.
-        weaknesses: Optional text describing observed failure patterns (from
-                    `mine_weaknesses()`). When provided, the model is told to
-                    target the mutation at these weaknesses - the "Weakness
-                    Mining -> Harness Proposal" link of Self-Harness
-                    (https://arxiv.org/abs/2606.09498). When None, the proposal
-                    is blind (classic DGM behaviour), preserving backward
-                    compatibility.
-
-    Returns:
-        (mutation_note, mutated_prompt) or None if parsing failed.
-    """
-    route_decision = route("hard")
-    weakness_block = (
-        f"\n\nObserved weaknesses to fix (target your mutation at THESE):\n{weaknesses}\n"
-        if weaknesses and weaknesses.strip()
-        else ""
-    )
-
-    # Preferred path: Anthropic forced tool-use guarantees the schema server-side
-    # (no prose, no invented keys) - the robust fix for chatty cloud models. Both
-    # backends expose /v1/messages; tool_call() returns None if unavailable, so we
-    # transparently fall back to the OpenAI-compat prefill path below.
-    user_msg = (
-        f"Current system prompt (score={parent.score:.3f}):\n\n{parent.prompt}\n"
-        f"{weakness_block}\nPropose one mutation to improve task performance."
-    )
-    tool_out = tool_call(
-        system=_MUTATION_SYSTEM,
-        user=user_msg,
-        tool_name="propose_mutation",
-        input_schema={
-            "type": "object",
-            "properties": {
-                "mutation_note":  {"type": "string", "description": "one sentence describing the change"},
-                "mutated_prompt": {"type": "string", "description": "the COMPLETE new system prompt text"},
-            },
-            "required": ["mutation_note", "mutated_prompt"],
-        },
-        backend=route_decision.backend,
-    )
-    if isinstance(tool_out, dict) and str(tool_out.get("mutated_prompt", "")):
-        return str(tool_out.get("mutation_note", "")), str(tool_out["mutated_prompt"])
-
-    # Fallback: OpenAI-compat chat with assistant-prefill schema pinning
-    # (reuses weakness_block from above).
-    messages = [
-        {"role": "system", "content": _MUTATION_SYSTEM},
-        {
-            "role": "user",
-            "content": (
-                f"Current system prompt (score={parent.score:.3f}):\n\n"
-                f"{parent.prompt}\n"
-                f"{weakness_block}\n"
-                "Propose one mutation to improve task performance."
-            ),
-        },
-        # Assistant-message PREFILL pins the schema. A system-prompt instruction
-        # alone is not enough - chatty models (Claude via VibeProxy) preamble in
-        # prose and even invent their own keys (the curriculum's own "L1 prompt
-        # alone fails" finding). Prefilling the opening brace AND the first key
-        # forces the model to continue INTO our schema. Works on oMLX and
-        # VibeProxy alike (it is just a trailing assistant turn, no API-specific
-        # param). See Anthropic's "prefill Claude's response" guidance.
-        {"role": "assistant", "content": _MUTATION_PREFILL},
-    ]
-
-    raw = chat(
-        messages,
-        backend=route_decision.backend,
-        temperature=0.8,   # higher temperature for creative mutations
-        max_tokens=1024,
-    )
-
-    # Reattach the prefilled fragment so the response is a complete JSON object.
-    completed = raw if raw.lstrip().startswith("{") else _MUTATION_PREFILL + raw
-    data = _extract_json_obj(completed)
-    if not isinstance(data, dict):
-        return None
-    note   = str(data.get("mutation_note",  ""))
-    prompt = str(data.get("mutated_prompt", ""))
-    if not prompt:
-        return None
-    return note, prompt
-
-
-# ---------------------------------------------------------------------------
-# Main evolution step
-# ---------------------------------------------------------------------------
-
-def run_evolution_step(
-    baseline_prompt: str,
-    baseline_score:  float,
-    eval_fn: Any,   # Callable[[str], float] - takes a system prompt, returns score
-    weaknesses: str | None = None,
-) -> EvolutionResult:
-    """
-    Run one DGM-style keep/discard evolution step.
-
-    Args:
-        baseline_prompt: The current best system prompt text.
-        baseline_score:  The baseline eval success rate (0-1).
-        eval_fn:         A callable that takes a system prompt string and returns
-                         a float score (0-1). Typically evals/run.py:score_prompt().
-
-    Returns:
-        EvolutionResult indicating whether the candidate was accepted.
-    """
-    # Determine parent: use the best archived variant if available, else baseline
-    archive = load_archive()
-    if archive:
-        import random
-        # Sample from top-3 to avoid over-exploiting a single parent
-        pool = archive[:3]
-        parent = random.choice(pool)
-    else:
-        # Bootstrap: create a v0000 baseline entry
-        parent = PromptVariant(
-            variant_id    = "v0000",
-            prompt        = baseline_prompt,
-            score         = baseline_score,
-            mutation_note = "baseline",
-        )
-        _save_variant(parent)
-
-    # Propose a mutation (optionally weakness-targeted - Self-Harness)
-    result = _propose_mutation(parent, weaknesses=weaknesses)
-    if result is None:
-        return EvolutionResult(
-            accepted       = False,
-            candidate      = parent,
-            baseline_score = baseline_score,
-            verdict_reason = "Mutation proposal failed or returned empty prompt.",
-        )
-
-    mutation_note, mutated_prompt = result
-
-    # Evaluate the candidate
-    try:
-        candidate_score = eval_fn(mutated_prompt)
-    except Exception as exc:
-        return EvolutionResult(
-            accepted       = False,
-            candidate      = parent,
-            baseline_score = baseline_score,
-            verdict_reason = f"Eval function raised an error: {exc}",
-        )
-
-    # Run through the verification gate
-    from verification.gates import verify
-    verdict = verify(
-        proposal         = {"type": "prompt", "content": mutated_prompt, "note": mutation_note},
-        candidate_score  = candidate_score,
-        baseline_score   = baseline_score,
-        run_safety_check = True,
-    )
-
-    # Build the variant record
-    next_id = f"v{len(archive) + 1:04d}"
-    candidate = PromptVariant(
-        variant_id    = next_id,
-        prompt        = mutated_prompt,
-        score         = candidate_score,
-        parent_id     = parent.variant_id,
-        mutation_note = mutation_note,
-    )
-
-    if verdict.accepted:
-        _save_variant(candidate)
-
-    return EvolutionResult(
-        accepted       = verdict.accepted,
-        candidate      = candidate,
-        baseline_score = baseline_score,
-        verdict_reason = verdict.reason,
+    settings.evolve_archive_dir.mkdir(parents=True, exist_ok=True)
+    return Gate(
+        sandbox=SubprocessSandbox(),
+        evaluator=evaluator,
+        client=client,
+        cwd=settings.evolve_archive_dir,
     )
 
 
 # ---------------------------------------------------------------------------
-# Weakness mining (Self-Harness, https://arxiv.org/abs/2606.09498)
+# Weakness mining (Self-Harness) - the one lab-specific bit kept on top
 # ---------------------------------------------------------------------------
 
 def mine_weaknesses(lessons: Any) -> str:
     """
-    Turn reflection output into a short, targeted weakness signal for
-    `_propose_mutation` / `run_evolution_step(weaknesses=...)`.
+    Turn reflection output into a short, targeted weakness signal for agentkit's
+    weakness-aware proposer (``make_llm_proposer(weaknesses=...)``).
 
-    This is the "Weakness Mining" stage of Self-Harness: instead of mutating the
-    prompt blind, distil the failure patterns the agent actually hit so the next
-    proposal edits the prompt where it breaks. It is the same move agent-prep's
-    `learning_extractor.extract()` makes over an observation log - here we read
-    the structured lessons that `reflection/reflect.py` already produces.
+    This is the "Weakness Mining" stage of Self-Harness
+    (https://arxiv.org/abs/2606.09498): instead of mutating the prompt blind,
+    distil the failure patterns the agent actually hit so the next proposal edits
+    the prompt where it breaks. agentkit does not know the lab's ``Lessons``
+    shape, so this stays lab-side; its output feeds straight into agentkit.
 
     Args:
-        lessons: a single object exposing `what_failed` / `root_cause`
+        lessons: a single object exposing ``what_failed`` / ``root_cause``
                  (e.g. reflection.reflect.Lessons), a dict with those keys, or a
                  list of either. Lessons whose failure is empty / "nothing" are
                  skipped (a clean run has no weakness to target).
@@ -413,7 +184,88 @@ def mine_weaknesses(lessons: Any) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Label-free self-preference (RHO, https://arxiv.org/abs/2606.05922)
+# Main evolution step (delegates to agentkit.evolve.evolve_prompt)
+# ---------------------------------------------------------------------------
+
+def run_evolution_step(
+    baseline_prompt: str,
+    baseline_score:  float,
+    eval_fn: Any,   # Callable[[str], float] - takes a system prompt, returns score
+    weaknesses: str | None = None,
+) -> EvolutionResult:
+    """
+    Run one DGM-style keep/discard evolution step, via agentkit's optimizer.
+
+    The proposer is agentkit's weakness-aware ``make_llm_proposer`` (the
+    Self-Harness "harness proposal" stage); the keep/discard CONTROL and the
+    admission gate are agentkit's. ``eval_fn`` is agentkit's evaluator, so the
+    regression/delta decision is computed by agentkit against ``baseline_score``.
+    An accepted variant is then persisted to the lab's git-revertible archive.
+
+    Args:
+        baseline_prompt: The current best system prompt text.
+        baseline_score:  The baseline eval success rate (0-1).
+        eval_fn:         A callable that takes a system prompt string and returns
+                         a float score (0-1). Typically evals/run.py:score_prompt().
+        weaknesses:      Optional weakness signal (from ``mine_weaknesses``) to
+                         target the mutation (Self-Harness). None = blind (DGM).
+
+    Returns:
+        EvolutionResult indicating whether the candidate was accepted.
+    """
+    archive = load_archive()
+    parent_id = archive[0].variant_id if archive else "v0000"
+
+    client = _client()
+    proposer = make_llm_proposer(client, weaknesses=weaknesses)
+
+    def evaluate(text: str) -> float:
+        try:
+            return float(eval_fn(text))
+        except Exception:
+            return 0.0
+
+    # The gate scores the proposal DICT; the loop scores the candidate TEXT -
+    # both must run the SAME eval_fn so the gate's regression stage and the
+    # loop's strict-improvement check agree (agentkit's optimize_text contract).
+    result = evolve_prompt(
+        baseline_prompt,
+        propose=proposer,
+        evaluate=evaluate,
+        gate=_gate(lambda proposal: evaluate(str(proposal.get("content", "")))),
+        baseline_score=baseline_score,
+        epochs=1,
+        cwd=settings.evolve_archive_dir,
+    )
+
+    accepted = result.accepted > 0
+    note = result.archive[-1].note if result.archive else "no proposal"
+    candidate = PromptVariant(
+        variant_id    = f"v{len(archive) + 1:04d}",
+        prompt        = result.best,
+        score         = result.best_score,
+        parent_id     = parent_id,
+        mutation_note = note,
+    )
+    if accepted:
+        _save_variant(candidate)
+
+    return EvolutionResult(
+        accepted       = accepted,
+        candidate      = candidate,
+        baseline_score = baseline_score,
+        verdict_reason = (
+            f"agentkit gate kept {result.accepted}/{result.epochs} epoch(s); "
+            f"delta={result.delta:+.3f}"
+        ),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Label-free self-preference (RHO) - re-solve-then-judge over the lab agent.
+# This shape (re-solve each task with the lab agent, then judge the ANSWERS) is
+# lab-specific; agentkit's self_preference judges prompt TEXTS directly. Kept as
+# a lab convenience; run_retrospective_step below uses agentkit's RHO loop.
 # ---------------------------------------------------------------------------
 
 _PREFERENCE_SYSTEM = """\
@@ -432,24 +284,21 @@ def self_preference(
     backend: str | None = None,
 ) -> int:
     """
-    Label-free pairwise comparison of two system prompts (RHO,
-    https://arxiv.org/abs/2606.05922).
+    Label-free pairwise comparison of two system prompts by RE-SOLVING each task
+    with the lab agent and judging the answers (RHO, the answer-space variant).
 
-    Re-solves each task in `task_inputs` with both prompts and asks the model to
-    pick the better answer WITHOUT any ground-truth label - the same shape as
-    agent-prep's `shared/llm.py:judge`, generalised to a pairwise preference.
     Returns the net preference for A over B: positive if A wins more, negative if
-    B wins more, 0 on a tie. This is the core of Retrospective Harness
-    Optimization: improve from the agent's own past trajectories using
-    self-preference instead of labels.
+    B wins more, 0 on a tie. ``run_retrospective_step`` uses agentkit's
+    prompt-space RHO loop directly; this helper is the lab's answer-space variant.
     """
     from agent.loop import run_agent  # lazy import to avoid a module cycle
+    from backends.adapter import chat
+    from backends.router import route
 
     net = 0
     for task in task_inputs:
         ans_a = run_agent(task, system_prompt=prompt_a, backend=backend).answer
         ans_b = run_agent(task, system_prompt=prompt_b, backend=backend).answer
-        route_decision = route("hard")
         raw = chat(
             [
                 {"role": "system", "content": _PREFERENCE_SYSTEM},
@@ -461,7 +310,7 @@ def self_preference(
                     ),
                 },
             ],
-            backend=route_decision.backend,
+            backend=route("hard").backend,
             temperature=0.0,
             max_tokens=200,
         )
@@ -486,52 +335,46 @@ def run_retrospective_step(
     backend: str | None = None,
 ) -> EvolutionResult:
     """
-    One label-free evolution step (RHO, https://arxiv.org/abs/2606.05922).
+    One label-free evolution step (RHO, https://arxiv.org/abs/2606.05922),
+    delegated to ``agentkit.evolve.evolve_prompt_rho``.
 
-    Unlike `run_evolution_step` (which needs an `eval_fn` returning a labeled
-    score), this keeps or discards a candidate purely on the agent's own
-    pairwise self-preference over re-solved past tasks - no ground truth, no
-    validation set. The safety / containment gate still applies; only the
-    regression-by-score check is replaced by self-preference. Optionally pass
-    `weaknesses` to combine RHO with Self-Harness weakness targeting.
+    Unlike ``run_evolution_step`` (which needs a labeled ``eval_fn``), agentkit's
+    RHO loop keeps or discards a candidate purely on the agent's own pairwise
+    self-preference over ``judge_inputs`` - no ground truth, no validation set.
+    The safety / containment gate still applies. Optionally pass ``weaknesses`` to
+    combine RHO with Self-Harness weakness targeting.
     """
-    parent = PromptVariant(
-        variant_id    = "retro-parent",
-        prompt        = baseline_prompt,
-        score         = 0.0,
-        mutation_note = "baseline (retrospective)",
+    client = _client(backend)
+    proposer = make_llm_proposer(client, weaknesses=weaknesses)
+
+    # RHO scores a candidate by the agent's own pairwise self-preference over the
+    # baseline (net positive = better), with NO labels - agentkit's
+    # ``self_preference``. The gate evaluator and the loop evaluator both run it
+    # so the gate's regression stage agrees with the keep decision.
+    def rho_score(candidate: str) -> float:
+        return float(max(_ak_self_preference(
+            client, candidate, baseline_prompt, judge_inputs=task_inputs
+        ), 0))
+
+    result = optimize_text(
+        baseline_prompt,
+        propose=proposer,
+        evaluate=rho_score,
+        gate=_gate(lambda proposal: rho_score(str(proposal.get("content", ""))), client),
+        baseline_score=0.0,
+        epochs=1,
+        proposal_type="prompt",
+        cwd=settings.evolve_archive_dir,
     )
-    result = _propose_mutation(parent, weaknesses=weaknesses)
-    if result is None:
-        return EvolutionResult(
-            accepted       = False,
-            candidate      = parent,
-            baseline_score = 0.0,
-            verdict_reason = "Mutation proposal failed or returned empty prompt.",
-        )
-    mutation_note, mutated_prompt = result
 
-    # Keep decision = the agent's own pairwise self-preference (no labels).
-    pref = self_preference(mutated_prompt, baseline_prompt, task_inputs, backend=backend)
-
-    # Safety / containment gate still applies. We encode the self-preference as
-    # the (label-free) "score" so the regression gate agrees with it, then AND
-    # with pref > 0 so a tie is discarded regardless of the gate's comparison.
-    from verification.gates import verify
-    verdict = verify(
-        proposal         = {"type": "prompt", "content": mutated_prompt, "note": mutation_note},
-        candidate_score  = float(max(pref, 0)),
-        baseline_score   = 0.0,
-        run_safety_check = True,
-    )
-    accepted = verdict.accepted and pref > 0
-
+    accepted = result.accepted > 0
     candidate = PromptVariant(
         variant_id    = f"retro-{int(time.time())}",
-        prompt        = mutated_prompt,
-        score         = float(pref),   # store net self-preference as the label-free score
-        parent_id     = parent.variant_id,
-        mutation_note = f"{mutation_note} [self-preference net={pref}]",
+        prompt        = result.best,
+        score         = result.best_score,
+        parent_id     = "retro-parent",
+        mutation_note = (result.archive[-1].note if result.archive else "rho") +
+                        f" [self-preference, delta={result.delta:+.3f}]",
     )
     if accepted:
         _save_variant(candidate)
@@ -541,7 +384,7 @@ def run_retrospective_step(
         candidate      = candidate,
         baseline_score = 0.0,
         verdict_reason = (
-            f"self-preference net={pref} ({'kept' if accepted else 'discarded'}); "
-            f"safety gate: {verdict.reason}"
+            f"RHO self-preference kept {result.accepted}/{result.epochs} "
+            f"({'kept' if accepted else 'discarded'}); delta={result.delta:+.3f}"
         ),
     )

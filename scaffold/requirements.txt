@@ -1,3 +1,8 @@
+# The lab's self-improving agent is BUILT ON agentkit. agentkit provides the
+# core (memory, agent loop, gates, sandbox/net_guard, evolve, skills) and the
+# SelfImprovingAgent facade; the scaffold keeps only its lab-specific glue
+# (the eval task, GOAL, tasks) and the external-framework demos.
+agentkit @ git+https://github.com/shaneliuyx/agentkit
 openai>=1.30.0
 numpy>=1.26.0
 python-dotenv>=1.0.0

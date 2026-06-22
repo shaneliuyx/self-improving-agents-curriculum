@@ -26,7 +26,7 @@ class Settings:
     backend: str = os.getenv("AGENT_BACKEND", "omlx")
     """omlx | vibeproxy - selects which local proxy handles chat completions."""
 
-    omlx_model: str = os.getenv("OMLX_MODEL", "qwen2.5-coder-7b")
+    omlx_model: str = os.getenv("OMLX_MODEL", "Qwen2.5-Coder-7B-Instruct-MLX-4bit")
     vibe_model: str = os.getenv("VIBE_MODEL", "claude-sonnet-4-5-20250929")
     llm_api_key: str = os.getenv("LLM_API_KEY", "not-needed")
     # oMLX API key (oMLX Preferences -> API). Used for oMLX chat AND embeddings.
@@ -45,7 +45,7 @@ class Settings:
     # embeddings to VibeProxy.
     # ---------------------------------------------------------------------------
     embed_base_url: str = os.getenv("EMBED_BASE_URL", "http://localhost:8000/v1")
-    embed_model: str = os.getenv("EMBED_MODEL", "Qwen3-Embedding-0.6B-4bit-DWQ")
+    embed_model: str = os.getenv("EMBED_MODEL", "bge-m3-mlx-fp16")
 
     # ---------------------------------------------------------------------------
     # Agent loop behaviour

@@ -274,10 +274,99 @@ def embed(texts: list[str]) -> list[list[float]]:
         List of embedding vectors (list of floats).
     """
     embed_base_url = os.getenv("EMBED_BASE_URL", "http://localhost:8000/v1")
-    embed_model = os.getenv("EMBED_MODEL", "Qwen3-Embedding-0.6B-4bit-DWQ")
+    embed_model = os.getenv("EMBED_MODEL", "bge-m3-mlx-fp16")
 
     # Embeddings hit oMLX, which may require a key - reuse OMLX_API_KEY.
     embed_key = os.getenv("OMLX_API_KEY", os.getenv("LLM_API_KEY", "not-needed"))
     emb_client = OpenAI(base_url=embed_base_url, api_key=embed_key)
     response = emb_client.embeddings.create(model=embed_model, input=texts)
     return [item.embedding for item in response.data]
+
+
+# ---------------------------------------------------------------------------
+# OMLXClient - the agentkit-style injected LLMClient (the DI seam)
+# ---------------------------------------------------------------------------
+# agentkit defines only the ``LLMClient`` Protocol (``chat(messages, tools=None)
+# -> ChatResult``); the concrete adapter lives operator-side, here. This is the
+# bridge between the lab's ``config.settings`` global and agentkit's dependency
+# injection: ``lab_agent.py`` builds one ``OMLXClient`` and passes it into
+# ``SelfImprovingAgent.from_config(..., backend=client)``.
+#
+# Reused from agentkit's ``examples/dynamic_topology_e2e.py`` (OpenAI-compatible
+# oMLX endpoint, base http://localhost:8000/v1, key "not-needed"), adapted to
+# read the lab's ``config.settings`` defaults.
+
+from agentkit.types import ChatResult  # noqa: E402  (deferred: optional dep)
+
+
+class OMLXClient:
+    """Real ``agentkit.types.LLMClient`` over an OpenAI-compatible oMLX endpoint.
+
+    No API key needed (local). Tracks call/token counts so the lab can report
+    cost. Tools are accepted to satisfy the Protocol but the lab's small local
+    models use agentkit's text-tool-call path, so they are not forwarded.
+    """
+
+    def __init__(
+        self,
+        model: str | None = None,
+        base_url: str | None = None,
+        api_key: str | None = None,
+        max_tokens: int = 400,
+    ) -> None:
+        self.base_url = base_url or BACKENDS["omlx"]["base_url"]
+        self.model = model or BACKENDS["omlx"]["model"]
+        self._c = OpenAI(
+            base_url=self.base_url,
+            api_key=api_key or os.getenv("OMLX_API_KEY", os.getenv("LLM_API_KEY", "not-needed")),
+        )
+        self.max_tokens = max_tokens
+        self.n_calls = 0
+        self.total_tokens = 0
+
+    def chat(self, messages: list[dict], tools: list[dict] | None = None) -> ChatResult:
+        self.n_calls += 1
+        r = self._c.chat.completions.create(
+            model=self.model,
+            messages=messages,
+            temperature=0.3,
+            max_tokens=self.max_tokens,
+        )
+        usage = getattr(r, "usage", None)
+        tt = getattr(usage, "total_tokens", 0) or 0
+        self.total_tokens += tt
+        return ChatResult(text=r.choices[0].message.content or "", total_tokens=tt)
+
+
+def discover_omlx_model(base_url: str | None = None) -> str:
+    """Return the first oMLX-served chat model that actually responds.
+
+    GET /v1/models lists every loaded id, but some 500 on inference; probe the
+    configured model first, then fall back to the first responding non-embedding
+    id. Raises RuntimeError if oMLX is unreachable or nothing answers.
+    """
+    base = base_url or BACKENDS["omlx"]["base_url"]
+    key = os.getenv("OMLX_API_KEY", os.getenv("LLM_API_KEY", "not-needed"))
+    c = OpenAI(base_url=base, api_key=key)
+
+    def _responds(mid: str) -> bool:
+        try:
+            r = c.chat.completions.create(
+                model=mid,
+                messages=[{"role": "user", "content": "Say OK."}],
+                max_tokens=8,
+                temperature=0,
+            )
+            return bool((r.choices[0].message.content or "").strip())
+        except Exception:
+            return False
+
+    ids = [m.id for m in c.models.list().data]
+    configured = BACKENDS["omlx"]["model"]
+    ordered = ([configured] if configured in ids else []) + [
+        m for m in ids if m != configured and "embed" not in m and "bge" not in m
+    ]
+    for mid in ordered:
+        if _responds(mid):
+            return mid
+    raise RuntimeError(f"no responding oMLX chat model among served ids: {ids}")

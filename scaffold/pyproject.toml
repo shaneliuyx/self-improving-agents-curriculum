@@ -4,6 +4,9 @@ version = "0.1.0"
 description = "Runnable scaffold for building self-improving agents on local oMLX or Claude MAX via VibeProxy."
 requires-python = ">=3.10"
 dependencies = [
+    # The lab's self-improving agent is BUILT ON agentkit (memory, agent loop,
+    # gates, sandbox/net_guard, evolve, skills, + the SelfImprovingAgent facade).
+    "agentkit @ git+https://github.com/shaneliuyx/agentkit",
     "openai>=1.30",
     "numpy>=1.24",
 ]
@@ -22,7 +25,9 @@ build-backend = "setuptools.build_meta"
 # `from backends.adapter import ...` and `from config import settings` resolve
 # both at runtime and for type checkers.
 [tool.setuptools]
-py-modules = ["config"]
+# `lab_agent` is the canonical "lab agent on agentkit" entry point (top-level
+# module, like `config`), so `pip install -e .` exposes `import lab_agent`.
+py-modules = ["config", "lab_agent"]
 packages = [
     "backends",
     "agent",

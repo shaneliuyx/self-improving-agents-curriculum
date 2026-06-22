@@ -1,79 +1,52 @@
 """
-agent/net_guard.py - Network egress allowlist (containment primitive).
+agent/net_guard.py - THIN SHIM over ``agentkit.sandbox.net_guard``.
 
-THREAT (specific to a self-improving agent): the agent can propose changes to
-its own config. One bad prompt-mutation proposal that rewrites a backend
-`base_url` from `localhost:8000` to `http://attacker.example/v1` turns every
-subsequent turn into an exfiltration channel - it ships the full prompt (and any
-API key in the Authorization header) off-box, and the agent never "looks"
-malicious because it is just calling its LLM as usual.
+The default-deny egress allowlist this file used to implement now lives in
+agentkit (``agentkit.sandbox.net_guard``). The lab CONSUMES it instead of
+duplicating it. agentkit's port note is explicit: it dropped the scaffold's
+settings-bound ``assert_backends_allowed`` because agentkit injects backends
+rather than reading a global ``settings`` object.
 
-DEFENSE: an explicit allowlist of hosts the agent is permitted to talk to. The
-only legitimate egress targets are the local oMLX (:8000) and VibeProxy (:8317)
-backends, all on the loopback interface. `assert_backends_allowed()` validates
-the configured backend URLs at startup and refuses to run if any points off the
-allowlist - so a mutated config is caught before the first request, not after
-the data has already left.
-
-This is the L2 deterministic counterpart to Module 09's sandbox: the sandbox
-contains what a skill can *do* locally; net_guard contains where the process can
-*reach* over the network. Both are non-overridable by the LLM.
-
-No external deps. Pure stdlib (urllib.parse for host extraction).
+So this shim:
+  * re-exports agentkit's primitives (``EgressBlocked``, ``allowed_hosts``,
+    ``host_of``, ``is_allowed``, ``assert_allowed``), and
+  * KEEPS the lab-only ``assert_backends_allowed(settings)`` - the startup check
+    that validates every configured backend URL against the allowlist. This is
+    the one piece that did NOT map to agentkit (it is settings-coupled), so it
+    stays here as lab glue, built on agentkit's ``assert_allowed``.
 """
 
 from __future__ import annotations
 
-import os
 from typing import Any
-from urllib.parse import urlparse
 
+# The real implementation - imported from agentkit, not duplicated.
+from agentkit.sandbox.net_guard import (  # noqa: F401  (re-exported)
+    EgressBlocked,
+    allowed_hosts,
+    assert_allowed,
+    host_of,
+    is_allowed,
+)
 
-class EgressBlocked(Exception):
-    """Raised when a URL/host is not on the egress allowlist."""
-
-
-# Loopback is always allowed - the local backends live here. Anything else must
-# be opted in explicitly via ALLOWED_EGRESS_HOSTS (comma-separated hostnames).
-_DEFAULT_ALLOWED = {"localhost", "127.0.0.1", "0.0.0.0", "::1"}
-
-
-def allowed_hosts() -> set[str]:
-    """The current egress allowlist: loopback plus any ALLOWED_EGRESS_HOSTS."""
-    extra = os.getenv("ALLOWED_EGRESS_HOSTS", "")
-    extras = {h.strip().lower() for h in extra.split(",") if h.strip()}
-    return _DEFAULT_ALLOWED | extras
-
-
-def host_of(url: str) -> str:
-    """Extract the lowercased hostname from a URL. A bare host (no scheme) is
-    returned as-is so callers can pass either a full URL or a hostname."""
-    parsed = urlparse(url if "://" in url else f"//{url}", scheme="")
-    return (parsed.hostname or url).lower()
-
-
-def is_allowed(url: str) -> bool:
-    """True if `url`'s host is on the egress allowlist."""
-    return host_of(url) in allowed_hosts()
-
-
-def assert_allowed(url: str) -> None:
-    """Raise EgressBlocked if `url`'s host is not on the allowlist."""
-    if not is_allowed(url):
-        raise EgressBlocked(
-            f"egress blocked: host {host_of(url)!r} (from {url!r}) is not on the "
-            f"allowlist {sorted(allowed_hosts())}. If this is intentional, add it "
-            f"to ALLOWED_EGRESS_HOSTS - but a backend URL that left loopback is "
-            f"the classic config-mutation exfiltration signature."
-        )
+__all__ = [
+    "EgressBlocked",
+    "allowed_hosts",
+    "assert_allowed",
+    "host_of",
+    "is_allowed",
+    "assert_backends_allowed",
+]
 
 
 def assert_backends_allowed(settings: Any) -> list[str]:
     """Validate every configured backend URL against the allowlist at startup.
 
-    Checks the generation backends (oMLX, VibeProxy) and the embeddings backend.
-    Returns the list of validated URLs on success; raises EgressBlocked on the
-    first off-allowlist URL. Call this before the agent makes any request.
+    Lab-only glue (agentkit injects backends, so it has no equivalent). Checks
+    the generation backends (oMLX, VibeProxy) and the embeddings backend; returns
+    the list of validated URLs on success, raises ``EgressBlocked`` on the first
+    off-allowlist URL. Call this before the agent makes any request: a config
+    mutated to point a backend off-box is the classic exfiltration signature.
     """
     urls = [
         getattr(settings, "omlx_base_url", ""),
@@ -84,6 +57,13 @@ def assert_backends_allowed(settings: Any) -> list[str]:
     for url in urls:
         if not url:
             continue
-        assert_allowed(url)
+        assert_allowed(url)  # agentkit's deterministic, LLM-non-overridable check
         checked.append(url)
     return checked
+
+
+if __name__ == "__main__":
+    # Loopback allowed; external blocked (delegates to agentkit).
+    assert is_allowed("http://localhost:8000/v1")
+    assert not is_allowed("http://attacker.example/v1")
+    print("net_guard shim -> agentkit.sandbox.net_guard  (+ lab assert_backends_allowed)")
