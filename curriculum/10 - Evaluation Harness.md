@@ -433,15 +433,18 @@ def run_task(task: Task, variant_system: str | None = None) -> TaskResult:
     # IMPORTANT: drive the REAL agent loop, not a bare chat.completions call.
     # A single-shot completion measures the MODEL; the eval must measure the
     # AGENT - tools, loop, recovery - or it cannot catch harness regressions.
-    # The lab's agent/loop.py is a thin wrapper that delegates to
-    # agentkit.run_agent (it accepts the lab's system_override/difficulty kwargs
-    # and threads them into agentkit's run_agent + difficulty router). The
-    # returned object is an agentkit AgentResult, so result.answer is the answer.
-    from agent.loop import run_agent
+    #
+    # agentkit.run_agent signature: run_agent(task, client, tools=None,
+    #   system_prompt=DEFAULT, max_rounds=8, memory=None) -> AgentResult
+    # make_client() (from backends/adapter.py) reads AGENT_BACKEND and returns
+    # the appropriate LLMClient; difficulty-based routing is wired inside the
+    # client adapter, not in this call.
+    from agentkit import run_agent
+    client = make_client()
+    sys_prompt_kwargs = {"system_prompt": variant_system} if variant_system else {}
     t0 = time.perf_counter()
     try:
-        result = run_agent(task.input, system_override=variant_system,
-                           difficulty=task.difficulty)
+        result = run_agent(task.input, client, **sys_prompt_kwargs)
         output = result.answer or ""
         latency = time.perf_counter() - t0
         return TaskResult(
